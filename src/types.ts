@@ -1,3 +1,24 @@
+/** A keyed array element — stable identity for array items. */
+export type KeyedElement = { key: string; value: unknown };
+
+/** Symbol tag used to mark arrays as keyed (including empty ones). */
+export const KEYED = Symbol.for('onionskin.keyed');
+
+/** A keyed array is a regular array of KeyedElement, tagged with KEYED. */
+export type KeyedArray = KeyedElement[] & { [KEYED]: true };
+
+/** Create a keyed array (tagged). */
+export function toKeyed(arr: KeyedElement[]): KeyedArray {
+  const a = arr as KeyedArray;
+  a[KEYED] = true;
+  return a;
+}
+
+/** Type guard for keyed arrays. */
+export function isKeyedArray(v: unknown): v is KeyedArray {
+  return Array.isArray(v) && (v as any)[KEYED] === true;
+}
+
 /** What the caller provides to propose(). */
 export type OpInput = {
   path: string;
@@ -13,6 +34,8 @@ export type Op = {
   prev?: unknown;
   actor: 'user' | 'copilot';
   ts: number;
+  /** @internal — for array inserts, the position to insert at. */
+  insertAt?: number;
 };
 
 /** A copilot diff entry — may carry a conflict flag. */

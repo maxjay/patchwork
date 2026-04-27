@@ -1,6 +1,15 @@
 import type { Op, OpInput, Action, DiffEntry, DiffTreeNode } from './types.js';
 import { SessionClosedError, NoOpAtPathError, PathNotFoundError } from './errors.js';
-import { parsePath, isDescendant, pathsOverlap } from './pointer.js';
+import {
+  parsePath,
+  isDescendant,
+  pathsOverlap,
+  resolveToKeyed,
+  resolveToIndex,
+  keyify,
+  unkeyify,
+  getBySegments,
+} from './pointer.js';
 import type { Engine } from './engine.js';
 
 export class CopilotSession {
@@ -34,24 +43,41 @@ export class CopilotSession {
     const inputs = Array.isArray(input) ? input : [input];
 
     for (const inp of inputs) {
-      parsePath(inp.path);
+      parsePath(inp.path); // validate syntax
 
-      const prev = this._engine._effectiveValue(inp.path);
+      // Resolve index-based path to key-based
+      const keyedState = this._engine._buildKeyedState();
+      const segments = parsePath(inp.path);
+      const resolution = resolveToKeyed(segments, keyedState, this._engine._nextKey, inp.kind);
+      const keyedSegments = resolution.segments;
+      this._engine._nextKey = resolution.counter;
+      const keyedPath = keyedSegments.length === 0 ? '' : '/' + keyedSegments.join('/');
+
+      const prev = this._engine._effectiveValue(keyedPath);
 
       if (inp.kind === 'remove' && prev === undefined) {
         throw new PathNotFoundError(inp.path);
       }
 
+      // Keyify the value
+      let storedValue = inp.kind === 'remove' ? undefined : inp.value;
+      if (storedValue !== undefined) {
+        const kv = keyify(storedValue, this._engine._nextKey);
+        storedValue = kv.value;
+        this._engine._nextKey = kv.counter;
+      }
+
       const op: Op = {
-        path: inp.path,
+        path: keyedPath,
         kind: inp.kind,
-        value: inp.kind === 'remove' ? undefined : inp.value,
+        value: storedValue,
         prev,
         actor: 'copilot',
         ts: Date.now(),
+        insertAt: resolution.insertAt,
       };
 
-      this._ops.set(inp.path, op);
+      this._ops.set(keyedPath, op);
       this._undoStack.push({ kind: 'propose', ops: [op] });
       this._redoStack = [];
       this._engine._bump();
@@ -60,14 +86,18 @@ export class CopilotSession {
 
   revert(path: string): void {
     this._assertOpen();
-    parsePath(path);
+    // Resolve to keyed path
+    const keyedState = this._engine._buildKeyedState();
+    const segments = parsePath(path);
+    const keyedSegments = resolveToKeyed(segments, keyedState, this._engine._nextKey, 'replace').segments;
+    const keyedPath = keyedSegments.length === 0 ? '' : '/' + keyedSegments.join('/');
 
-    const op = this._ops.get(path);
+    const op = this._ops.get(keyedPath);
     if (!op) throw new NoOpAtPathError(path);
 
     const toRemove: Op[] = [];
     for (const [p, o] of this._ops) {
-      if (p === path || isDescendant(p, path)) {
+      if (p === keyedPath || isDescendant(p, keyedPath)) {
         toRemove.push(o);
       }
     }
@@ -141,9 +171,18 @@ export class CopilotSession {
   }
 
   diff(): DiffEntry[] {
+    // Build keyed state for path translation
+    const keyedState = this._engine._buildKeyedStateFromBase();
     const entries: DiffEntry[] = [];
     for (const op of this._ops.values()) {
-      const entry: DiffEntry = { ...op };
+      const indexPath = toIndexPath(op.path, keyedState);
+      const { insertAt: _, ...rest } = op;
+      const entry: DiffEntry = {
+        ...rest,
+        path: indexPath,
+        value: op.value !== undefined ? unkeyify(op.value) : undefined,
+        prev: op.prev !== undefined ? unkeyify(op.prev) : undefined,
+      };
       for (const userOp of this._engine._activeOps()) {
         if (pathsOverlap(op.path, userOp.path)) {
           entry.conflictsWithUser = true;
@@ -161,29 +200,37 @@ export class CopilotSession {
 
   approve(path: string): void {
     this._assertOpen();
-    const op = this._ops.get(path);
+    // Resolve to keyed path
+    const keyedPath = this._resolveInputPath(path);
+
+    const op = this._ops.get(keyedPath);
     if (!op) throw new NoOpAtPathError(path);
 
-    this._ops.delete(path);
+    this._ops.delete(keyedPath);
     this._engine._acceptOp(op);
     this._engine._bump();
   }
 
   decline(path: string): void {
     this._assertOpen();
-    const op = this._ops.get(path);
+    const keyedPath = this._resolveInputPath(path);
+
+    const op = this._ops.get(keyedPath);
     if (!op) throw new NoOpAtPathError(path);
 
-    this._ops.delete(path);
+    this._ops.delete(keyedPath);
     this._engine._bump();
   }
 
   approveAll(): void {
     this._assertOpen();
     for (const path of [...this._ops.keys()]) {
-      this.approve(path);
+      const op = this._ops.get(path)!;
+      this._ops.delete(path);
+      this._engine._acceptOp(op);
     }
     this._close();
+    this._engine._bump();
   }
 
   declineAll(): void {
@@ -204,9 +251,32 @@ export class CopilotSession {
     this._closed = true;
     this._engine._copilotSession = null;
   }
+
+  /**
+   * Resolve an index-based input path to the keyed path.
+   * For approve/decline, the path must match an existing copilot op.
+   */
+  private _resolveInputPath(path: string): string {
+    const keyedState = this._engine._buildKeyedState();
+    const segments = parsePath(path);
+    try {
+      const keyedSegments = resolveToKeyed(segments, keyedState, this._engine._nextKey, 'replace').segments;
+      return keyedSegments.length === 0 ? '' : '/' + keyedSegments.join('/');
+    } catch {
+      // If resolution fails, the path might not exist in current state.
+      // Return the raw path and let the caller handle NoOpAtPathError.
+      return path;
+    }
+  }
 }
 
-// ─── diffTree builder ───────────────────────────────────────────────────────
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+function toIndexPath(keyedPath: string, keyedState: unknown): string {
+  const segments = parsePath(keyedPath);
+  const indexed = resolveToIndex(segments, keyedState);
+  return indexed.length === 0 ? '' : '/' + indexed.join('/');
+}
 
 function buildDiffTree(ops: (Op | DiffEntry)[]): DiffTreeNode {
   const root: DiffTreeNode = { children: new Map() };
