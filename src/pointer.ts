@@ -17,21 +17,32 @@ export function parsePath(path: string): string[] {
     .map((s) => s.replace(/~1/g, '/').replace(/~0/g, '~'));
 }
 
-// ─── Keyed array helpers ────────────────────────────────────────────────────
-
-/** Find a keyed element by its key. Returns the element or undefined. */
-function findByKey(arr: KeyedElement[], key: string): KeyedElement | undefined {
-  return arr.find((el) => el.key === key);
+/**
+ * Build a JSON Pointer from segments, applying RFC 6901 escaping.
+ */
+export function buildPath(segments: string[]): string {
+  if (segments.length === 0) return '';
+  return '/' + segments.map((s) => s.replace(/~/g, '~0').replace(/\//g, '~1')).join('/');
 }
 
-/** Find index of a keyed element by its key. Returns -1 if not found. */
-function indexOfKey(arr: KeyedElement[], key: string): number {
-  return arr.findIndex((el) => el.key === key);
+// ─── Keyed arrays ───────────────────────────────────────────────────────────
+//
+// Arrays are the one special case. Object paths pass through as-is.
+// Only when a path traverses an array do we need to translate between
+// the caller's index-based path and the engine's key-based internal path.
+
+/** Returns true if the value contains any array (at any depth). */
+export function containsArray(value: unknown): boolean {
+  if (Array.isArray(value)) return true;
+  if (value !== null && typeof value === 'object') {
+    return Object.values(value as Record<string, unknown>).some(containsArray);
+  }
+  return false;
 }
 
 /**
  * Wrap all arrays in a JSON value with keyed elements.
- * Returns the keyed value and the updated counter.
+ * Only call this when the value actually contains arrays.
  */
 export function keyify(value: unknown, counter: number): { value: unknown; counter: number } {
   if (Array.isArray(value)) {
@@ -56,17 +67,12 @@ export function keyify(value: unknown, counter: number): { value: unknown; count
   return { value, counter };
 }
 
-/**
- * Strip keyed wrappers from a value, producing plain JSON.
- */
+/** Strip keyed wrappers, producing plain JSON. */
 export function unkeyify(value: unknown): unknown {
   if (isKeyedArray(value)) {
     return value.map((el) => unkeyify(el.value));
   }
-  // Empty array edge case — isKeyedArray returns false for empty arrays
-  if (Array.isArray(value) && value.length === 0) {
-    return [];
-  }
+  if (Array.isArray(value) && value.length === 0) return [];
   if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
     const rec = value as Record<string, unknown>;
     const out: Record<string, unknown> = {};
@@ -78,18 +84,17 @@ export function unkeyify(value: unknown): unknown {
   return value;
 }
 
-// ─── Path resolution (index ↔ key) ─────────────────────────────────────────
-
 /**
- * Resolve an index-based path to a key-based path against a keyed object.
- * For non-array segments, passes through unchanged.
- * For array segments, resolves the numeric index (or '-') to the element's key.
+ * Resolve an index-based path to an internal path.
  *
- * `opKind` is needed to handle 'add' at a new index (inserts get a new key).
- * Returns { segments, newKeys } where newKeys are any keys that were allocated
- * for 'add' operations (so the caller can assign them).
+ * Walks `obj` (the current internal state) segment by segment.
+ * Object segments pass through unchanged. Array segments translate
+ * the numeric index to the element's stable key.
+ *
+ * For `add` ops targeting an array, a new key is allocated and
+ * `insertAt` records where to splice the new element.
  */
-export function resolveToKeyed(
+export function resolveToInternal(
   segments: string[],
   obj: unknown,
   counter: number,
@@ -104,33 +109,32 @@ export function resolveToKeyed(
     const isLast = i === segments.length - 1;
 
     if (isKeyedArray(current)) {
+      // Array segment — translate index to key
       if (isLast && opKind === 'add') {
-        // Adding a new element — always allocate a new key for add
-        const key = String(counter);
-        resolved.push(key);
-        counter++;
+        // New element: allocate a key, record insertion position
+        resolved.push(String(counter));
         insertAt = seg === '-' ? current.length : Number(seg);
+        counter++;
         current = undefined;
       } else if (seg === '-') {
-        // '-' in a non-add-at-end context: treat as last element
         const el = current[current.length - 1];
-        if (!el) throw new PathNotFoundError('/' + segments.slice(0, i + 1).join('/'));
+        if (!el) throw new PathNotFoundError(buildPath(segments.slice(0, i + 1)));
         resolved.push(el.key);
         current = el.value;
       } else {
         const idx = Number(seg);
         if (!Number.isInteger(idx) || idx < 0 || idx >= current.length) {
-          throw new PathNotFoundError('/' + segments.slice(0, i + 1).join('/'));
+          throw new PathNotFoundError(buildPath(segments.slice(0, i + 1)));
         }
         resolved.push(current[idx].key);
         current = current[idx].value;
       }
     } else if (current !== null && typeof current === 'object' && !Array.isArray(current)) {
+      // Object segment — pass through
       resolved.push(seg);
       current = (current as Record<string, unknown>)[seg];
     } else {
-      // Traversing into a primitive or null — the intermediate doesn't exist yet.
-      // For 'add' ops this is fine (implicit parent creation); otherwise error.
+      // Path goes through a primitive or undefined (implicit parent creation for add)
       resolved.push(seg);
       current = undefined;
     }
@@ -140,22 +144,18 @@ export function resolveToKeyed(
 }
 
 /**
- * Resolve a key-based path back to an index-based path against a keyed object.
- * For non-array segments, passes through unchanged.
- * For array segments, resolves the key to its current positional index.
+ * Resolve an internal (key-based) path back to an index-based path.
+ * Only array segments change — keys become positional indices.
+ * Object segments pass through unchanged.
  */
-export function resolveToIndex(segments: string[], obj: unknown): string[] {
+export function resolveToExternal(segments: string[], obj: unknown): string[] {
   const resolved: string[] = [];
   let current = obj;
 
-  for (let i = 0; i < segments.length; i++) {
-    const seg = segments[i];
-
+  for (const seg of segments) {
     if (isKeyedArray(current)) {
-      const idx = indexOfKey(current, seg);
+      const idx = current.findIndex((el) => el.key === seg);
       if (idx === -1) {
-        // Key not found in current state — might have been removed.
-        // Return the key as-is (caller can handle).
         resolved.push(seg);
         current = undefined;
       } else {
@@ -174,20 +174,19 @@ export function resolveToIndex(segments: string[], obj: unknown): string[] {
   return resolved;
 }
 
-// ─── Keyed-aware get/set/remove ─────────────────────────────────────────────
+// ─── Internal-path get/set/remove ───────────────────────────────────────────
+//
+// These operate on the keyed internal representation.
+// Array segments are element keys; object segments are property names.
 
-/**
- * Get a value from a keyed object by key-based segments.
- * Keyed arrays are traversed by key; objects by property name.
- */
+/** Get a value by internal path segments. */
 export function getBySegments(obj: unknown, segments: string[]): unknown {
   let current = obj;
   for (const seg of segments) {
     if (current === null || current === undefined) return undefined;
     if (isKeyedArray(current)) {
-      const el = findByKey(current, seg);
-      if (!el) return undefined;
-      current = el.value;
+      const el = current.find((e) => e.key === seg);
+      current = el ? el.value : undefined;
     } else if (typeof current === 'object') {
       current = (current as Record<string, unknown>)[seg];
     } else {
@@ -197,16 +196,7 @@ export function getBySegments(obj: unknown, segments: string[]): unknown {
   return current;
 }
 
-/** Get a value from a keyed object by JSON Pointer path (key-based). */
-export function getByPath(obj: unknown, path: string): unknown {
-  return getBySegments(obj, parsePath(path));
-}
-
-/**
- * Set a value in a keyed object by key-based segments (immutable — returns a new object).
- * For keyed arrays: if the key exists, update it; if not, append a new element with that key.
- * Creates intermediate objects as needed.
- */
+/** Set a value by internal path segments. Immutable — returns a new structure. */
 export function setBySegments(
   obj: unknown,
   segments: string[],
@@ -219,13 +209,14 @@ export function setBySegments(
 
   if (isKeyedArray(obj)) {
     const copy = obj.map((el) => ({ ...el }));
-    const idx = indexOfKey(copy, head);
+    const idx = copy.findIndex((el) => el.key === head);
     if (idx !== -1) {
-      // Update existing element
       copy[idx] = { key: head, value: setBySegments(copy[idx].value, rest, value) };
     } else {
-      // New element — insert at specified position or append
-      const newEl: KeyedElement = { key: head, value: rest.length === 0 ? value : setBySegments(undefined, rest, value) };
+      const newEl: KeyedElement = {
+        key: head,
+        value: rest.length === 0 ? value : setBySegments(undefined, rest, value),
+      };
       if (insertAt !== undefined && insertAt < copy.length) {
         copy.splice(insertAt, 0, newEl);
       } else {
@@ -235,78 +226,64 @@ export function setBySegments(
     return toKeyed(copy);
   }
 
-  // Object or creating a new object
-  const rec: Record<string, unknown> = obj !== null && typeof obj === 'object' && !Array.isArray(obj)
-    ? { ...(obj as Record<string, unknown>) }
-    : {};
+  const rec: Record<string, unknown> =
+    obj !== null && typeof obj === 'object' && !Array.isArray(obj)
+      ? { ...(obj as Record<string, unknown>) }
+      : {};
   rec[head] = setBySegments(rec[head], rest, value, insertAt);
   return rec;
 }
 
-/**
- * Remove a key from a keyed object by key-based segments (immutable — returns a new object).
- * For keyed arrays: removes the element with the matching key (splice semantics — order preserved).
- */
+/** Remove by internal path segments. Immutable — returns a new structure. */
 export function removeBySegments(obj: unknown, segments: string[]): unknown {
-  if (segments.length === 0) {
-    throw new PathNotFoundError('');
-  }
+  if (segments.length === 0) throw new PathNotFoundError('');
 
   const [head, ...rest] = segments;
 
   if (rest.length === 0) {
-    // Remove at this level
     if (isKeyedArray(obj)) {
-      const idx = indexOfKey(obj, head);
-      if (idx === -1) {
-        throw new PathNotFoundError('/' + head);
-      }
+      const idx = obj.findIndex((el) => el.key === head);
+      if (idx === -1) throw new PathNotFoundError(buildPath([head]));
       const copy = [...obj];
       copy.splice(idx, 1);
       return toKeyed(copy);
-    } else if (obj !== null && typeof obj === 'object') {
+    }
+    if (obj !== null && typeof obj === 'object') {
       const rec = obj as Record<string, unknown>;
-      if (!(head in rec)) {
-        throw new PathNotFoundError('/' + head);
-      }
+      if (!(head in rec)) throw new PathNotFoundError(buildPath([head]));
       const { [head]: _, ...remaining } = rec;
       return remaining;
     }
-    throw new PathNotFoundError('/' + head);
+    throw new PathNotFoundError(buildPath([head]));
   }
 
-  // Recurse
   if (isKeyedArray(obj)) {
-    const idx = indexOfKey(obj, head);
-    if (idx === -1) {
-      throw new PathNotFoundError('/' + head);
-    }
+    const idx = obj.findIndex((el) => el.key === head);
+    if (idx === -1) throw new PathNotFoundError(buildPath([head]));
     const copy = obj.map((el) => ({ ...el }));
     copy[idx] = { key: head, value: removeBySegments(copy[idx].value, rest) };
     return toKeyed(copy);
-  } else if (obj !== null && typeof obj === 'object') {
+  }
+  if (obj !== null && typeof obj === 'object') {
     const rec = obj as Record<string, unknown>;
     return { ...rec, [head]: removeBySegments(rec[head], rest) };
   }
 
-  throw new PathNotFoundError('/' + segments.join('/'));
+  throw new PathNotFoundError(buildPath(segments));
 }
 
 // ─── Path relationships ─────────────────────────────────────────────────────
 
-/** Check if pathA is an ancestor of pathB. */
 export function isAncestor(ancestorPath: string, descendantPath: string): boolean {
   if (ancestorPath === descendantPath) return false;
-  if (ancestorPath === '') return true; // root is ancestor of everything
+  if (ancestorPath === '') return true;
   return descendantPath.startsWith(ancestorPath + '/');
 }
 
-/** Check if pathA is a descendant of pathB. */
 export function isDescendant(descendantPath: string, ancestorPath: string): boolean {
   return isAncestor(ancestorPath, descendantPath);
 }
 
-/** Check if two paths overlap: equal, ancestor, or descendant. */
 export function pathsOverlap(a: string, b: string): boolean {
   return a === b || isAncestor(a, b) || isAncestor(b, a);
 }

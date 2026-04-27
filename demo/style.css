@@ -1,0 +1,366 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 13px;
+  background: #0d1117;
+  color: #c9d1d9;
+  min-height: 100vh;
+}
+
+header {
+  padding: 16px 24px;
+  border-bottom: 1px solid #21262d;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+header h1 {
+  font-size: 16px;
+  color: #f0f6fc;
+}
+
+.subtitle {
+  font-size: 12px;
+  color: #8b949e;
+}
+
+.container {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  background: #21262d;
+  min-height: calc(100vh - 53px);
+}
+
+.panel {
+  background: #0d1117;
+  padding: 16px 20px;
+  overflow-y: auto;
+}
+
+.editor-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.editor-toolbar h2 {
+  margin-bottom: 0;
+}
+
+.toolbar-actions {
+  display: flex;
+  gap: 4px;
+}
+
+h2 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: #8b949e;
+  margin-bottom: 16px;
+}
+
+h3 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: #8b949e;
+  margin: 16px 0 8px;
+  padding-top: 12px;
+  border-top: 1px solid #21262d;
+}
+
+/* ─── Add field row ───────────────────────────────────────── */
+
+.add-field-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 6px 0;
+  border-top: 1px solid #21262d;
+}
+
+.add-input {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  color: #c9d1d9;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 4px 8px;
+  width: 120px;
+}
+
+.add-input:focus {
+  border-color: #58a6ff;
+  outline: none;
+  background: #0d1117;
+}
+
+.add-input::placeholder {
+  color: #484f58;
+}
+
+/* ─── Editor rows ─────────────────────────────────────────── */
+
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  border-radius: 4px;
+  position: relative;
+}
+
+.field-row:hover {
+  background: #161b22;
+}
+
+.field-row.changed {
+  background: rgba(187, 128, 9, 0.08);
+}
+
+.field-row.copilot-changed {
+  background: rgba(56, 139, 253, 0.08);
+}
+
+.field-key {
+  color: #79c0ff;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.field-indent {
+  display: inline-block;
+}
+
+.field-colon {
+  color: #484f58;
+}
+
+.field-value {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  color: #c9d1d9;
+  font-family: inherit;
+  font-size: 13px;
+  padding: 2px 8px;
+  min-width: 80px;
+  flex: 1;
+}
+
+.field-value:focus {
+  border-color: #58a6ff;
+  outline: none;
+  background: #0d1117;
+}
+
+.field-value.type-string { color: #a5d6ff; }
+.field-value.type-number { color: #79c0ff; }
+.field-value.type-boolean { color: #ff7b72; }
+
+.field-remove {
+  background: none;
+  border: none;
+  color: #484f58;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  line-height: 1;
+}
+
+.field-remove:hover {
+  color: #f85149;
+  background: rgba(248, 81, 73, 0.1);
+}
+
+.field-section {
+  color: #8b949e;
+  padding: 6px 0 2px;
+  font-size: 12px;
+}
+
+/* ─── Tooltip ─────────────────────────────────────────────── */
+
+.tooltip {
+  display: none;
+  position: absolute;
+  left: 0;
+  top: 100%;
+  z-index: 10;
+  background: #1c2128;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+}
+
+.field-row:hover .tooltip {
+  display: block;
+}
+
+.tooltip .base-val { color: #f85149; }
+.tooltip .curr-val { color: #3fb950; }
+
+/* ─── Buttons ─────────────────────────────────────────────── */
+
+.btn {
+  background: #21262d;
+  border: 1px solid #30363d;
+  color: #c9d1d9;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.btn:hover {
+  background: #30363d;
+}
+
+.btn-small {
+  font-size: 11px;
+  padding: 4px 10px;
+}
+
+.btn-approve {
+  border-color: #238636;
+  color: #3fb950;
+}
+
+.btn-approve:hover {
+  background: rgba(35, 134, 54, 0.2);
+}
+
+.btn-decline {
+  border-color: #da3633;
+  color: #f85149;
+}
+
+.btn-decline:hover {
+  background: rgba(218, 54, 51, 0.2);
+}
+
+/* ─── Copilot ─────────────────────────────────────────────── */
+
+.hidden { display: none !important; }
+
+.copilot-proposal {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: rgba(56, 139, 253, 0.05);
+  border: 1px solid rgba(56, 139, 253, 0.15);
+  margin-bottom: 6px;
+}
+
+.copilot-proposal .op-path {
+  color: #79c0ff;
+  flex: 1;
+}
+
+.copilot-proposal .op-kind {
+  color: #8b949e;
+  font-size: 11px;
+}
+
+.copilot-proposal .op-values {
+  color: #8b949e;
+  font-size: 12px;
+}
+
+.copilot-proposal .op-values .prev { color: #f85149; }
+.copilot-proposal .op-values .next { color: #3fb950; }
+
+.copilot-bulk {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* ─── Debug ───────────────────────────────────────────────── */
+
+details {
+  margin-bottom: 12px;
+}
+
+summary {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: #58a6ff;
+  cursor: pointer;
+  padding: 4px 0;
+  user-select: none;
+}
+
+summary:hover {
+  color: #79c0ff;
+}
+
+pre {
+  background: #161b22;
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-size: 12px;
+  color: #c9d1d9;
+  margin-top: 4px;
+}
+
+.op-entry {
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  margin-bottom: 2px;
+  background: #161b22;
+}
+
+.op-entry .op-kind {
+  display: inline-block;
+  min-width: 56px;
+  color: #8b949e;
+}
+
+.op-entry .op-kind.add { color: #3fb950; }
+.op-entry .op-kind.replace { color: #d29922; }
+.op-entry .op-kind.remove { color: #f85149; }
+
+.op-entry .op-path { color: #79c0ff; }
+.op-entry .op-prev { color: #f85149; }
+.op-entry .op-next { color: #3fb950; }
+.op-entry .op-arrow { color: #484f58; }
+
+.no-ops {
+  color: #484f58;
+  font-size: 12px;
+  font-style: italic;
+  padding: 4px 8px;
+}
+
+.version {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid #21262d;
+  font-size: 11px;
+  color: #484f58;
+}

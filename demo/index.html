@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>onionskin — demo</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>onionskin</h1>
+    <span class="subtitle">copilot-native JSON editing engine</span>
+  </header>
+
+  <div class="container">
+    <div class="panel editor-panel">
+      <div class="editor-toolbar">
+        <h2>Editor</h2>
+        <div class="toolbar-actions">
+          <button id="undo-btn" class="btn btn-small" title="Undo (Ctrl+Z)">Undo</button>
+          <button id="redo-btn" class="btn btn-small" title="Redo (Ctrl+Shift+Z)">Redo</button>
+        </div>
+      </div>
+      <div id="editor"></div>
+      <div id="add-field-row" class="add-field-row">
+        <input id="add-key" class="add-input" placeholder="key" />
+        <input id="add-value" class="add-input" placeholder="value" />
+        <button id="add-submit" class="btn btn-small">+ Add</button>
+      </div>
+
+      <div id="copilot-section">
+        <div id="copilot-inactive">
+          <button id="start-copilot" class="btn">Start Copilot Session</button>
+        </div>
+        <div id="copilot-active" class="hidden">
+          <h3>Copilot Proposals</h3>
+          <div id="copilot-proposals"></div>
+          <div class="copilot-bulk">
+            <button id="approve-all" class="btn btn-approve">Approve All</button>
+            <button id="decline-all" class="btn btn-decline">Decline All</button>
+            <button id="end-session" class="btn btn-small">End Session</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel debug-panel">
+      <h2>Debug</h2>
+
+      <details open>
+        <summary>Base</summary>
+        <pre id="debug-base"></pre>
+      </details>
+
+      <details open>
+        <summary>User Ops</summary>
+        <div id="debug-user-ops"></div>
+      </details>
+
+      <details open>
+        <summary>Copilot Ops</summary>
+        <div id="debug-copilot-ops"></div>
+      </details>
+
+      <details open>
+        <summary>Current State</summary>
+        <pre id="debug-current"></pre>
+      </details>
+
+      <div class="version" id="debug-version"></div>
+    </div>
+  </div>
+
+  <script type="module" src="main.ts"></script>
+</body>
+</html>
