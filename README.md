@@ -1,9 +1,9 @@
 # onionskin
 
-Session-based, copilot-native JSON editing engine. All changes flow through draft layers — never mutate your config directly. Built so an AI copilot and a human user can edit the same object through the same primitives, with the human always in control.
+Session-based, copilot-native JSON editing engine. Give it any JSON object — the engine wraps it in draft layers so every edit is tracked, reviewable, and undoable. Built so an AI copilot and a human user can edit the same document through the same primitives, with the human always in control.
 
 ```
-base config  →  user session (draft)  →  copilot session (proposal)
+JSON document  →  user session (draft)  →  copilot session (proposal)
 ```
 
 ## Install
@@ -14,33 +14,48 @@ npm install onionskin
 
 ## Quick start
 
+Pass any JSON object (or parse one from a string). The engine never mutates your original — all edits flow through sessions.
+
 ```ts
 import { Engine } from 'onionskin';
 
-const engine = new Engine({
-  database: { host: 'localhost', port: 5432 },
-  cache: { ttl: 60 },
-});
+// Any JSON object — could come from a file, an API, user input, wherever
+const doc = {
+  name: 'My Project',
+  settings: { theme: 'light', fontSize: 14 },
+  tags: ['draft'],
+};
+
+const engine = new Engine(doc);
 
 // Start editing
 const session = engine.startUserSession();
 
-session.propose({ kind: 'replace', path: '/database/host', value: 'prod.db' });
-session.propose({ kind: 'replace', path: '/cache/ttl', value: 300 });
+session.propose({ kind: 'replace', path: '/settings/theme', value: 'dark' });
+session.propose({ kind: 'replace', path: '/settings/fontSize', value: 16 });
+session.propose({ kind: 'add', path: '/tags/-', value: 'v2' });
 
-engine.get('/database/host');  // 'prod.db'
-engine.get('/cache/ttl');      // 300
+engine.get('/settings/theme');  // 'dark'
 
 // Review what changed
 session.diff();
 // [
-//   { path: '/database/host', kind: 'replace', value: 'prod.db', prev: 'localhost', actor: 'user', ... },
-//   { path: '/cache/ttl', kind: 'replace', value: 300, prev: 60, actor: 'user', ... },
+//   { path: '/settings/theme', kind: 'replace', value: 'dark', prev: 'light', actor: 'user', ... },
+//   { path: '/settings/fontSize', kind: 'replace', value: 16, prev: 14, actor: 'user', ... },
+//   { path: '/tags/-', kind: 'add', value: 'v2', actor: 'user', ... },
 // ]
 
-// Commit when ready
+// Commit when ready — folds edits into the base
 session.commit();
-engine.export();  // { database: { host: 'prod.db', port: 5432 }, cache: { ttl: 300 } }
+engine.export();
+// { name: 'My Project', settings: { theme: 'dark', fontSize: 16 }, tags: ['draft', 'v2'] }
+```
+
+Works with any JSON — parsed from a file, fetched from an API, or built in code:
+
+```ts
+const fromString = new Engine(JSON.parse('{"key": "value"}'));
+const fromApi = new Engine(await fetch('/api/config').then(r => r.json()));
 ```
 
 ## Examples
@@ -95,11 +110,11 @@ Reverting a parent automatically reverts its children — they can't exist witho
 const engine = new Engine({});
 const session = engine.startUserSession();
 
-session.propose({ kind: 'add', path: '/server', value: {} });
-session.propose({ kind: 'add', path: '/server/host', value: 'localhost' });
-session.propose({ kind: 'add', path: '/server/port', value: 8080 });
+session.propose({ kind: 'add', path: '/address', value: {} });
+session.propose({ kind: 'add', path: '/address/street', value: '123 Main St' });
+session.propose({ kind: 'add', path: '/address/city', value: 'Springfield' });
 
-session.revert('/server');  // removes /server, /server/host, and /server/port
+session.revert('/address');  // removes /address, /address/street, and /address/city
 session.diff();  // []
 
 session.undo();  // brings all three back in one step
@@ -112,36 +127,39 @@ The copilot edits through a nested session. Its changes are held for review — 
 
 ```ts
 const engine = new Engine({
-  timeout: 30,
-  retries: 3,
-  logLevel: 'warn',
+  title: 'Quarterly Report',
+  author: 'Alice',
+  status: 'draft',
+  sections: ['intro', 'methodology'],
 });
 
 const session = engine.startUserSession();
 const copilot = session.startCopilot();
 
 // Copilot proposes some changes
-copilot.propose({ kind: 'replace', path: '/timeout', value: 60 });
-copilot.propose({ kind: 'replace', path: '/retries', value: 5 });
-copilot.propose({ kind: 'replace', path: '/logLevel', value: 'debug' });
+copilot.propose({ kind: 'replace', path: '/title', value: 'Q3 Quarterly Report' });
+copilot.propose({ kind: 'replace', path: '/status', value: 'review' });
+copilot.propose({ kind: 'add', path: '/sections/-', value: 'conclusion' });
 
 // Review what copilot wants to change
 copilot.diff();
 // [
-//   { path: '/timeout', value: 60, prev: 30, actor: 'copilot', ... },
-//   { path: '/retries', value: 5, prev: 3, actor: 'copilot', ... },
-//   { path: '/logLevel', value: 'debug', prev: 'warn', actor: 'copilot', ... },
+//   { path: '/title', value: 'Q3 Quarterly Report', prev: 'Quarterly Report', actor: 'copilot', ... },
+//   { path: '/status', value: 'review', prev: 'draft', actor: 'copilot', ... },
+//   { path: '/sections/-', value: 'conclusion', actor: 'copilot', ... },
 // ]
 
 // Approve some, decline others
-copilot.approve('/timeout');   // folded into user session
-copilot.approve('/retries');   // folded into user session
-copilot.decline('/logLevel');  // dropped
+copilot.approve('/title');      // folded into user session
+copilot.decline('/status');     // dropped — user wants to keep 'draft'
+copilot.approve('/sections/-'); // folded into user session
 
 copilot.end();
 session.commit();
 
-engine.export();  // { timeout: 60, retries: 5, logLevel: 'warn' }
+engine.export();
+// { title: 'Q3 Quarterly Report', author: 'Alice', status: 'draft',
+//   sections: ['intro', 'methodology', 'conclusion'] }
 ```
 
 Or approve/decline everything at once:
@@ -157,24 +175,24 @@ copilot.declineAll();   // drops everything, ends copilot session
 When the copilot proposes a change at a path the user has already edited, the diff flags it.
 
 ```ts
-const engine = new Engine({ timeout: 30 });
+const engine = new Engine({ title: 'Untitled', priority: 'low' });
 const session = engine.startUserSession();
 
 // User edits first
-session.propose({ kind: 'replace', path: '/timeout', value: 45 });
+session.propose({ kind: 'replace', path: '/title', value: 'My Document' });
 
-// Copilot proposes into the same territory
+// Copilot proposes into the same path
 const copilot = session.startCopilot();
-copilot.propose({ kind: 'replace', path: '/timeout', value: 60 });
+copilot.propose({ kind: 'replace', path: '/title', value: 'Project Plan' });
 
 copilot.diff();
-// [{ path: '/timeout', value: 60, prev: 45, conflictsWithUser: true, ... }]
-//                                            ^^^^^^^^^^^^^^^^^^^^^^^^
+// [{ path: '/title', value: 'Project Plan', prev: 'My Document', conflictsWithUser: true, ... }]
+//                                                                 ^^^^^^^^^^^^^^^^^^^^^^^^
 // The UI should warn: "this will overwrite your edit"
 
-copilot.approve('/timeout');  // user chose to accept — last-write-wins
+copilot.approve('/title');  // user chose to accept — last-write-wins
 // or
-copilot.decline('/timeout');  // user chose to keep their value
+copilot.decline('/title');  // user chose to keep their value
 ```
 
 ### User is king
@@ -187,25 +205,24 @@ const session = engine.startUserSession();
 const copilot = session.startCopilot();
 
 // --- Same path: auto-decline ---
-copilot.propose({ kind: 'add', path: '/timeout', value: 60 });
-session.propose({ kind: 'add', path: '/timeout', value: 45 });
+copilot.propose({ kind: 'add', path: '/title', value: 'Copilot Title' });
+session.propose({ kind: 'add', path: '/title', value: 'My Title' });
 copilot.diff();  // [] — copilot's op was auto-declined
 
 // --- Descendant: auto-accept ---
-// (new copilot session)
-copilot.propose({ kind: 'add', path: '/server', value: { host: 'x' } });
-session.propose({ kind: 'add', path: '/server/port', value: 8080 });
-// Copilot's /server was auto-accepted (user building on it implies acceptance)
-// Both /server and /server/port are now in the user session
+copilot.propose({ kind: 'add', path: '/metadata', value: { created: '2025-01-01' } });
+session.propose({ kind: 'add', path: '/metadata/author', value: 'Alice' });
+// Copilot's /metadata was auto-accepted (user building on it implies acceptance)
+// Both /metadata and /metadata/author are now in the user session
 
 // --- Ancestor: auto-decline ---
-copilot.propose({ kind: 'add', path: '/db/port', value: 5432 });
-session.propose({ kind: 'add', path: '/db', value: { host: 'prod' } });
-// Copilot's /db/port was auto-declined (user replaced the whole subtree)
+copilot.propose({ kind: 'add', path: '/options/color', value: 'red' });
+session.propose({ kind: 'add', path: '/options', value: { size: 'large' } });
+// Copilot's /options/color was auto-declined (user replaced the whole subtree)
 
 // --- Unrelated: coexist ---
-copilot.propose({ kind: 'add', path: '/cache', value: {} });
-session.propose({ kind: 'add', path: '/logging', value: {} });
+copilot.propose({ kind: 'add', path: '/notes', value: [] });
+session.propose({ kind: 'add', path: '/tags', value: ['important'] });
 // No overlap — both stay where they are
 ```
 
@@ -217,24 +234,24 @@ session.propose({ kind: 'add', path: '/logging', value: {} });
 const engine = new Engine({});
 const session = engine.startUserSession();
 
-session.propose({ kind: 'add', path: '/database/host', value: 'prod.db' });
-session.propose({ kind: 'add', path: '/database/port', value: 5432 });
-session.propose({ kind: 'add', path: '/cache/ttl', value: 300 });
+session.propose({ kind: 'add', path: '/author/name', value: 'Alice' });
+session.propose({ kind: 'add', path: '/author/email', value: 'alice@example.com' });
+session.propose({ kind: 'add', path: '/metadata/created', value: '2025-01-01' });
 
 const tree = session.diffTree();
 // {
 //   children: Map {
-//     'database' => {
-//       segment: 'database',
+//     'author' => {
+//       segment: 'author',
 //       children: Map {
-//         'host' => { segment: 'host', op: { path: '/database/host', ... }, children: Map {} },
-//         'port' => { segment: 'port', op: { path: '/database/port', ... }, children: Map {} },
+//         'name'  => { segment: 'name',  op: { path: '/author/name', ... },  children: Map {} },
+//         'email' => { segment: 'email', op: { path: '/author/email', ... }, children: Map {} },
 //       }
 //     },
-//     'cache' => {
-//       segment: 'cache',
+//     'metadata' => {
+//       segment: 'metadata',
 //       children: Map {
-//         'ttl' => { segment: 'ttl', op: { path: '/cache/ttl', ... }, children: Map {} },
+//         'created' => { segment: 'created', op: { path: '/metadata/created', ... }, children: Map {} },
 //       }
 //     },
 //   }
@@ -309,7 +326,7 @@ $: version = engine.version;
 
 | Method | Returns | Description |
 |---|---|---|
-| `new Engine(base, opts?)` | `Engine<T>` | Create an engine with a base config |
+| `new Engine(base, opts?)` | `Engine<T>` | Create an engine wrapping a JSON object |
 | `engine.get(path)` | `unknown` | Read a value through all layers |
 | `engine.export()` | `T` | Deep copy of the current effective config |
 | `engine.startUserSession()` | `UserSession` | Open a new editing session |
@@ -357,7 +374,7 @@ $: version = engine.version;
 { kind, path, value?, prev?, actor: 'user' | 'copilot', ts: number }
 ```
 
-Paths are [JSON Pointers](https://datatracker.ietf.org/doc/html/rfc6901) — `/database/host`, `/items/0`, etc.
+Paths are [JSON Pointers](https://datatracker.ietf.org/doc/html/rfc6901) — `/name`, `/settings/theme`, `/items/0`, etc.
 
 ## Docs
 
