@@ -20,7 +20,7 @@ export type DiffEntry = Op & { conflictsWithUser?: boolean };
 
 /** One reversible unit of work on the undo/redo stack. */
 export type Action = {
-  kind: 'propose' | 'revert' | 'approve';
+  kind: 'propose' | 'revert' | 'approve' | 'apply';
   ops: Op[];
   /** For revert/undo: the ops that were removed, for restoring on undo. */
   undone?: Op[];

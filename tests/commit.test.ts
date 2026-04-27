@@ -1,42 +1,86 @@
 import { describe, it, expect } from 'vitest';
 import { Engine, CopilotSessionOpenError } from '../src/index.js';
 
-describe('COMMIT — Commit, export, and session finalization', () => {
-  it('COMMIT-01: commit with pending copilot session throws', () => {
+describe('APPLY — Apply and export', () => {
+  it('apply with pending copilot session throws', () => {
     const engine = new Engine({ a: 1 });
-    const us = engine.startUserSession();
-    const cs = us.startCopilot();
+    const cs = engine.startCopilot();
     cs.propose({ kind: 'replace', path: '/a', value: 2 });
-    expect(() => us.commit()).toThrow(CopilotSessionOpenError);
+    expect(() => engine.apply()).toThrow(CopilotSessionOpenError);
   });
 
-  it('COMMIT-02: commit folds user ops and ends session', () => {
+  it('apply folds ops into base', () => {
     const engine = new Engine({ a: 1 });
-    const us = engine.startUserSession();
-    us.propose({ kind: 'replace', path: '/a', value: 2 });
-    us.commit();
-    expect(engine.activeUserSession()).toBe(null);
+    engine.propose({ kind: 'replace', path: '/a', value: 2 });
+    engine.apply();
+    expect(engine.get('/a')).toBe(2);
+    expect(engine.export()).toEqual({ a: 2 });
+    expect(engine.diff()).toEqual([]);
+  });
+
+  it('multiple applies accumulate on base', () => {
+    const engine = new Engine({ a: 1 });
+    engine.propose({ kind: 'replace', path: '/a', value: 2 });
+    engine.apply();
+    engine.propose({ kind: 'add', path: '/b', value: 10 });
+    engine.apply();
+    expect(engine.export()).toEqual({ a: 2, b: 10 });
+  });
+
+  it('apply with no ops is a no-op', () => {
+    const engine = new Engine({ a: 1 });
+    const v = engine.version;
+    engine.apply();
+    expect(engine.version).toBe(v); // no version bump
+  });
+
+  it('undo after apply restores the op and reverts the base', () => {
+    const engine = new Engine({ a: 1 });
+    engine.propose({ kind: 'replace', path: '/a', value: 2 });
+    engine.apply();
+    expect(engine.diff()).toEqual([]);
+    expect(engine.get('/a')).toBe(2);
+
+    engine.undo();
+    expect(engine.diff()).toHaveLength(1);
+    expect(engine.diff()[0].value).toBe(2);
+    expect(engine.get('/a')).toBe(2); // still 2 — op is back in the active set
+    // But the base is reverted to 1
+    expect(engine.export()).toEqual({ a: 2 }); // base(1) + op(replace /a=2)
+  });
+
+  it('undo apply then undo the op itself restores original', () => {
+    const engine = new Engine({ a: 1 });
+    engine.propose({ kind: 'replace', path: '/a', value: 2 });
+    engine.apply();
+
+    engine.undo(); // undo the apply
+    engine.undo(); // undo the propose
+
+    expect(engine.get('/a')).toBe(1);
+    expect(engine.diff()).toEqual([]);
+    expect(engine.export()).toEqual({ a: 1 });
+  });
+
+  it('redo after undoing apply re-applies', () => {
+    const engine = new Engine({ a: 1 });
+    engine.propose({ kind: 'replace', path: '/a', value: 2 });
+    engine.apply();
+    engine.undo();
+    engine.redo();
+
+    expect(engine.diff()).toEqual([]);
     expect(engine.get('/a')).toBe(2);
     expect(engine.export()).toEqual({ a: 2 });
   });
 
-  it('COMMIT-03: multiple commits accumulate on base', () => {
+  it('can keep editing after apply', () => {
     const engine = new Engine({ a: 1 });
-    const us1 = engine.startUserSession();
-    us1.propose({ kind: 'replace', path: '/a', value: 2 });
-    us1.commit();
-    const us2 = engine.startUserSession();
-    us2.propose({ kind: 'add', path: '/b', value: 10 });
-    us2.commit();
-    expect(engine.export()).toEqual({ a: 2, b: 10 });
-  });
+    engine.propose({ kind: 'replace', path: '/a', value: 2 });
+    engine.apply();
 
-  it('COMMIT-04: discard leaves base unchanged', () => {
-    const engine = new Engine({ a: 1 });
-    const us = engine.startUserSession();
-    us.propose({ kind: 'replace', path: '/a', value: 2 });
-    us.discard();
-    expect(engine.get('/a')).toBe(1);
-    expect(engine.export()).toEqual({ a: 1 });
+    engine.propose({ kind: 'add', path: '/b', value: 'hello' });
+    expect(engine.diff()).toHaveLength(1);
+    expect(engine.export()).toEqual({ a: 2, b: 'hello' });
   });
 });

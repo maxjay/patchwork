@@ -1,9 +1,9 @@
 # onionskin
 
-Session-based, copilot-native JSON editing engine. Give it any JSON object — the engine wraps it in draft layers so every edit is tracked, reviewable, and undoable. Built so an AI copilot and a human user can edit the same document through the same primitives, with the human always in control.
+Copilot-native JSON editing engine. Give it any JSON object — the engine wraps it in draft layers so every edit is tracked, reviewable, and undoable. Built so an AI copilot and a human user can edit the same document through the same primitives, with the human always in control.
 
 ```
-JSON document  →  user session (draft)  →  copilot session (proposal)
+JSON document  →  engine (continuous editing)  →  copilot session (proposal layer)
 ```
 
 ## Install
@@ -14,7 +14,7 @@ npm install onionskin
 
 ## Quick start
 
-Pass any JSON object (or parse one from a string). The engine never mutates your original — all edits flow through sessions.
+Pass any JSON object (or parse one from a string). The engine never mutates your original — all edits are tracked as ops.
 
 ```ts
 import { Engine } from 'onionskin';
@@ -28,27 +28,28 @@ const doc = {
 
 const engine = new Engine(doc);
 
-// Start editing
-const session = engine.startUserSession();
-
-session.propose({ kind: 'replace', path: '/settings/theme', value: 'dark' });
-session.propose({ kind: 'replace', path: '/settings/fontSize', value: 16 });
-session.propose({ kind: 'add', path: '/tags/-', value: 'v2' });
+// Start editing — no session to open, just propose changes
+engine.propose({ kind: 'replace', path: '/settings/theme', value: 'dark' });
+engine.propose({ kind: 'replace', path: '/settings/fontSize', value: 16 });
+engine.propose({ kind: 'add', path: '/tags/-', value: 'v2' });
 
 engine.get('/settings/theme');  // 'dark'
 
 // Review what changed
-session.diff();
+engine.diff();
 // [
 //   { path: '/settings/theme', kind: 'replace', value: 'dark', prev: 'light', actor: 'user', ... },
 //   { path: '/settings/fontSize', kind: 'replace', value: 16, prev: 14, actor: 'user', ... },
 //   { path: '/tags/-', kind: 'add', value: 'v2', actor: 'user', ... },
 // ]
 
-// Commit when ready — folds edits into the base
-session.commit();
+// Apply when ready — folds edits into the base, diff resets, undo history survives
+engine.apply();
 engine.export();
 // { name: 'My Project', settings: { theme: 'dark', fontSize: 16 }, tags: ['draft', 'v2'] }
+
+// Keep editing — no need to start a new session
+engine.propose({ kind: 'replace', path: '/name', value: 'My Project v2' });
 ```
 
 Works with any JSON — parsed from a file, fetched from an API, or built in code:
@@ -66,24 +67,42 @@ Every change is tracked. Undo and redo work like any editor you've used.
 
 ```ts
 const engine = new Engine({ color: 'red', size: 10 });
-const session = engine.startUserSession();
 
-session.propose({ kind: 'replace', path: '/color', value: 'blue' });
+engine.propose({ kind: 'replace', path: '/color', value: 'blue' });
 engine.get('/color');  // 'blue'
 
-session.undo();
+engine.undo();
 engine.get('/color');  // 'red'
 
-session.redo();
+engine.redo();
 engine.get('/color');  // 'blue'
 ```
 
 New changes clear the redo stack — just like VS Code, Figma, etc.
 
 ```ts
-session.undo();
-session.propose({ kind: 'replace', path: '/size', value: 20 });
-session.redo();  // no-op — redo was cleared by the new change
+engine.undo();
+engine.propose({ kind: 'replace', path: '/size', value: 20 });
+engine.redo();  // no-op — redo was cleared by the new change
+```
+
+### Undo survives apply
+
+Apply folds your edits into the base and resets the diff — but the undo stack stays. Like pressing save in a document editor.
+
+```ts
+const engine = new Engine({ a: 1 });
+
+engine.propose({ kind: 'replace', path: '/a', value: 2 });
+engine.apply();
+
+engine.diff();          // [] — diff is clean
+engine.get('/a');       // 2
+engine.export();        // { a: 2 }
+
+engine.undo();          // undo the apply
+engine.undo();          // undo the propose
+engine.get('/a');       // 1 — back to original
 ```
 
 ### Revert a specific change
@@ -92,14 +111,13 @@ Undo pops from the top. Revert targets a specific path — like clicking the X n
 
 ```ts
 const engine = new Engine({});
-const session = engine.startUserSession();
 
-session.propose({ kind: 'add', path: '/a', value: 1 });
-session.propose({ kind: 'add', path: '/b', value: 2 });
-session.propose({ kind: 'add', path: '/c', value: 3 });
+engine.propose({ kind: 'add', path: '/a', value: 1 });
+engine.propose({ kind: 'add', path: '/b', value: 2 });
+engine.propose({ kind: 'add', path: '/c', value: 3 });
 
-session.revert('/b');  // removes /b, leaves /a and /c
-session.diff().map(op => op.path);  // ['/a', '/c']
+engine.revert('/b');  // removes /b, leaves /a and /c
+engine.diff().map(op => op.path);  // ['/a', '/c']
 ```
 
 ### Cascading revert
@@ -108,17 +126,16 @@ Reverting a parent automatically reverts its children — they can't exist witho
 
 ```ts
 const engine = new Engine({});
-const session = engine.startUserSession();
 
-session.propose({ kind: 'add', path: '/address', value: {} });
-session.propose({ kind: 'add', path: '/address/street', value: '123 Main St' });
-session.propose({ kind: 'add', path: '/address/city', value: 'Springfield' });
+engine.propose({ kind: 'add', path: '/address', value: {} });
+engine.propose({ kind: 'add', path: '/address/street', value: '123 Main St' });
+engine.propose({ kind: 'add', path: '/address/city', value: 'Springfield' });
 
-session.revert('/address');  // removes /address, /address/street, and /address/city
-session.diff();  // []
+engine.revert('/address');  // removes /address, /address/street, and /address/city
+engine.diff();  // []
 
-session.undo();  // brings all three back in one step
-session.diff().length;  // 3
+engine.undo();  // brings all three back in one step
+engine.diff().length;  // 3
 ```
 
 ### Copilot proposals
@@ -133,8 +150,7 @@ const engine = new Engine({
   sections: ['intro', 'methodology'],
 });
 
-const session = engine.startUserSession();
-const copilot = session.startCopilot();
+const copilot = engine.startCopilot();
 
 // Copilot proposes some changes
 copilot.propose({ kind: 'replace', path: '/title', value: 'Q3 Quarterly Report' });
@@ -150,12 +166,12 @@ copilot.diff();
 // ]
 
 // Approve some, decline others
-copilot.approve('/title');      // folded into user session
+copilot.approve('/title');      // folded into engine
 copilot.decline('/status');     // dropped — user wants to keep 'draft'
-copilot.approve('/sections/-'); // folded into user session
+copilot.approve('/sections/-'); // folded into engine
 
 copilot.end();
-session.commit();
+engine.apply();
 
 engine.export();
 // { title: 'Q3 Quarterly Report', author: 'Alice', status: 'draft',
@@ -165,7 +181,7 @@ engine.export();
 Or approve/decline everything at once:
 
 ```ts
-copilot.approveAll();   // folds all pending ops into user session, ends copilot session
+copilot.approveAll();   // folds all pending ops, ends copilot session
 // or
 copilot.declineAll();   // drops everything, ends copilot session
 ```
@@ -176,13 +192,12 @@ When the copilot proposes a change at a path the user has already edited, the di
 
 ```ts
 const engine = new Engine({ title: 'Untitled', priority: 'low' });
-const session = engine.startUserSession();
 
 // User edits first
-session.propose({ kind: 'replace', path: '/title', value: 'My Document' });
+engine.propose({ kind: 'replace', path: '/title', value: 'My Document' });
 
 // Copilot proposes into the same path
-const copilot = session.startCopilot();
+const copilot = engine.startCopilot();
 copilot.propose({ kind: 'replace', path: '/title', value: 'Project Plan' });
 
 copilot.diff();
@@ -201,28 +216,27 @@ When the user edits during an open copilot session, the engine resolves overlaps
 
 ```ts
 const engine = new Engine({});
-const session = engine.startUserSession();
-const copilot = session.startCopilot();
+const copilot = engine.startCopilot();
 
 // --- Same path: auto-decline ---
 copilot.propose({ kind: 'add', path: '/title', value: 'Copilot Title' });
-session.propose({ kind: 'add', path: '/title', value: 'My Title' });
+engine.propose({ kind: 'add', path: '/title', value: 'My Title' });
 copilot.diff();  // [] — copilot's op was auto-declined
 
 // --- Descendant: auto-accept ---
 copilot.propose({ kind: 'add', path: '/metadata', value: { created: '2025-01-01' } });
-session.propose({ kind: 'add', path: '/metadata/author', value: 'Alice' });
+engine.propose({ kind: 'add', path: '/metadata/author', value: 'Alice' });
 // Copilot's /metadata was auto-accepted (user building on it implies acceptance)
-// Both /metadata and /metadata/author are now in the user session
+// Both /metadata and /metadata/author are now in the engine's op set
 
 // --- Ancestor: auto-decline ---
 copilot.propose({ kind: 'add', path: '/options/color', value: 'red' });
-session.propose({ kind: 'add', path: '/options', value: { size: 'large' } });
+engine.propose({ kind: 'add', path: '/options', value: { size: 'large' } });
 // Copilot's /options/color was auto-declined (user replaced the whole subtree)
 
 // --- Unrelated: coexist ---
 copilot.propose({ kind: 'add', path: '/notes', value: [] });
-session.propose({ kind: 'add', path: '/tags', value: ['important'] });
+engine.propose({ kind: 'add', path: '/tags', value: ['important'] });
 // No overlap — both stay where they are
 ```
 
@@ -232,13 +246,12 @@ session.propose({ kind: 'add', path: '/tags', value: ['important'] });
 
 ```ts
 const engine = new Engine({});
-const session = engine.startUserSession();
 
-session.propose({ kind: 'add', path: '/author/name', value: 'Alice' });
-session.propose({ kind: 'add', path: '/author/email', value: 'alice@example.com' });
-session.propose({ kind: 'add', path: '/metadata/created', value: '2025-01-01' });
+engine.propose({ kind: 'add', path: '/author/name', value: 'Alice' });
+engine.propose({ kind: 'add', path: '/author/email', value: 'alice@example.com' });
+engine.propose({ kind: 'add', path: '/metadata/created', value: '2025-01-01' });
 
-const tree = session.diffTree();
+const tree = engine.diffTree();
 // {
 //   children: Map {
 //     'author' => {
@@ -258,39 +271,6 @@ const tree = session.diffTree();
 // }
 ```
 
-### Multiple sessions over time
-
-Sessions are sequential. Commit one, start another. Each builds on the last.
-
-```ts
-const engine = new Engine({ version: 1 });
-
-const s1 = engine.startUserSession();
-s1.propose({ kind: 'add', path: '/feature', value: 'dark-mode' });
-s1.commit();
-
-const s2 = engine.startUserSession();
-s2.propose({ kind: 'replace', path: '/version', value: 2 });
-s2.commit();
-
-engine.export();  // { version: 2, feature: 'dark-mode' }
-```
-
-### Discard
-
-Changed your mind? Discard throws everything away.
-
-```ts
-const engine = new Engine({ clean: true });
-const session = engine.startUserSession();
-
-session.propose({ kind: 'replace', path: '/clean', value: false });
-engine.get('/clean');  // false
-
-session.discard();
-engine.get('/clean');  // true — as if the session never happened
-```
-
 ### Version counter
 
 The engine exposes a monotonic version counter that increments on every state change. Use it for reactivity — subscribe to the number, re-read when it changes.
@@ -299,10 +279,10 @@ The engine exposes a monotonic version counter that increments on every state ch
 const engine = new Engine({ a: 1 });
 const v0 = engine.version;
 
-const session = engine.startUserSession();
+engine.propose({ kind: 'replace', path: '/a', value: 2 });
 const v1 = engine.version;  // v1 > v0
 
-session.propose({ kind: 'replace', path: '/a', value: 2 });
+engine.apply();
 const v2 = engine.version;  // v2 > v1
 ```
 
@@ -328,25 +308,17 @@ $: version = engine.version;
 |---|---|---|
 | `new Engine(base, opts?)` | `Engine<T>` | Create an engine wrapping a JSON object |
 | `engine.get(path)` | `unknown` | Read a value through all layers |
-| `engine.export()` | `T` | Deep copy of the current effective config |
-| `engine.startUserSession()` | `UserSession` | Open a new editing session |
-| `engine.activeUserSession()` | `UserSession \| null` | The current session, if any |
+| `engine.export()` | `T` | Deep copy of the current effective state |
+| `engine.propose(op)` | `void` | Add an op (`add`, `remove`, `replace`) |
+| `engine.revert(path)` | `void` | Remove the op at a path (cascades to descendants) |
+| `engine.undo()` | `void` | Undo the most recent action |
+| `engine.redo()` | `void` | Redo the most recently undone action |
+| `engine.diff()` | `Op[]` | Ops in insertion order |
+| `engine.diffTree()` | `DiffTreeNode` | Ops organized as a nested tree |
+| `engine.apply()` | `void` | Fold ops into the base (diff resets, undo survives) |
+| `engine.startCopilot()` | `CopilotSession` | Open a copilot review session |
+| `engine.activeCopilotSession()` | `CopilotSession \| null` | The current copilot session, if any |
 | `engine.version` | `number` | Monotonic counter, increments on every state change |
-
-### `UserSession`
-
-| Method | Returns | Description |
-|---|---|---|
-| `propose(op)` | `void` | Add an op (`add`, `remove`, `replace`) |
-| `revert(path)` | `void` | Remove the op at a path (cascades to descendants) |
-| `undo()` | `void` | Undo the most recent action |
-| `redo()` | `void` | Redo the most recently undone action |
-| `diff()` | `Op[]` | Ops in insertion order |
-| `diffTree()` | `DiffTreeNode` | Ops organized as a nested tree |
-| `startCopilot()` | `CopilotSession` | Open a copilot review session |
-| `activeCopilotSession()` | `CopilotSession \| null` | The current copilot session, if any |
-| `commit()` | `void` | Fold ops into the base and close the session |
-| `discard()` | `void` | Drop all ops and close the session |
 
 ### `CopilotSession`
 
@@ -358,7 +330,7 @@ $: version = engine.version;
 | `redo()` | `void` | Redo the most recently undone action |
 | `diff()` | `DiffEntry[]` | Proposed ops with `conflictsWithUser` flags |
 | `diffTree()` | `DiffTreeNode` | Proposed ops as a nested tree |
-| `approve(path)` | `void` | Fold one op into the user session |
+| `approve(path)` | `void` | Fold one op into the engine |
 | `decline(path)` | `void` | Drop one op |
 | `approveAll()` | `void` | Approve all and end session |
 | `declineAll()` | `void` | Decline all and end session |

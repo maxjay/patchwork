@@ -5,12 +5,6 @@ export class OnionskinError extends Error {
   }
 }
 
-export class SessionAlreadyOpenError extends OnionskinError {
-  constructor() {
-    super('A user session is already open');
-  }
-}
-
 export class CopilotAlreadyOpenError extends OnionskinError {
   constructor() {
     super('A copilot session is already open');
@@ -25,7 +19,7 @@ export class SessionClosedError extends OnionskinError {
 
 export class CopilotSessionOpenError extends OnionskinError {
   constructor() {
-    super('Cannot commit while a copilot session is open');
+    super('Cannot apply while a copilot session is open');
   }
 }
 
