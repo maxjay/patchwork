@@ -15,7 +15,7 @@ Read this when:
 
 ### 0.1 The user story
 
-> "I have an original config. I, as the user, am making drafts over it, which I can view the differences of because this engine can give me the value of this key in the JSON and also the differences that have happened. But I, as the user during my edit session, I also talk to copilot and ask copilot to make some changes, which I can review and approve. I have to be able to see these copilot differences away from my own differences for the approval and decline. We should be able to undo changes, not just across whole sessions, but also individual changes within the sessions. If I edit a list to include two values in one session, I can undo the whole session or I can undo one of the values within that session — this can be a button across that value in the UI."
+> "I have a JSON document. I, as the user, am making edits over it, which I can view the differences of because the engine can give me the value of any key and also the differences that have happened. But I also talk to copilot and ask copilot to make some changes, which I can review and approve. I have to be able to see these copilot differences away from my own differences for the approval and decline. We should be able to undo changes at individual operation granularity — if I edit two values, I can undo them individually. This can be a button next to each value in the UI."
 
 This is the origin of the design. Every rule in the spec traces back to a phrase in this story.
 
@@ -27,7 +27,7 @@ These principles drove the whole design. When in doubt, fall back to them.
 
 **User is king.** The human user is the primary actor. Their direct actions take precedence and the engine infers the right resolution automatically where possible. The copilot is a secondary actor whose work is always routed through user review.
 
-**Copilot is a secondary actor.** Copilot operates through the same session primitives as the user, but its output lives in a nested layer that the user explicitly approves or declines. Copilot never writes directly to the user's layer.
+**Copilot is a secondary actor.** Copilot operates through the same editing primitives as the user, but its output lives in a nested layer that the user explicitly approves or declines. Copilot never writes directly to the engine's op set.
 
 **All state is observable and derivable.** Effective values, diffs, conflict flags — everything the UI needs to render — comes out of the engine via query methods. The engine never needs to push, because the UI can always pull what it needs.
 
@@ -37,7 +37,7 @@ These principles drove the whole design. When in doubt, fall back to them.
 
 ### 0.3 The two-package split
 
-**`<core-engine-package>`** — the session model, ops, diffs, undo, export. Pure TypeScript, no runtime dependencies beyond what Node/browser provide.
+**`<core-engine-package>`** — the editing model, ops, diffs, undo, export. Pure TypeScript, no runtime dependencies beyond what Node/browser provide.
 
 **`<mcp-toolkit-package>`** — pre-built MCP tool definitions and handlers that bind to an engine instance. Not a server — a **toolkit** that developers use to expose their own engine over their own MCP server framework.
 
@@ -48,16 +48,16 @@ We split because bundling MCP into the core would force every consumer to take o
 The engine is designed to run **in-browser, local to a single user**. One human editing through one engine instance. Multiple tabs or tenants construct separate engine instances rather than sharing one.
 
 This assumption justifies several simplifications:
-- One user session per engine (no need for session IDs in the public API).
+- One engine instance per editing context (no need for session IDs in the public API).
 - In-memory only (no persistence, no hydration).
 - No locking, no concurrency control.
 - Export returns a plain object; serialization is the host app's concern.
 
-Server-side deployment (multi-user, concurrent edits, conflict resolution across committed sessions) is explicitly deferred to v2. It's a different problem — closer to CRDTs or OT — and trying to design for it now would over-engineer v0 and still get v2 wrong.
+Server-side deployment (multi-user, concurrent edits, conflict resolution) is explicitly deferred to v2. It's a different problem — closer to CRDTs or OT — and trying to design for it now would over-engineer v0 and still get v2 wrong.
 
 ---
 
-## 1. Why session-based editing
+## 1. Why layered editing
 
 ### 1.1 The problem with direct mutation
 
@@ -70,21 +70,21 @@ The naive design is: give callers a JSON object, let them mutate it. This fails 
 
 ### 1.2 The draft layer model
 
-Instead: all edits go through **sessions** that hold a draft on top of the base config. The base is immutable; the session is a set of pending ops. The effective state is base + session ops, computed on read.
+Instead: all edits flow through the **engine** as ops on top of an immutable base. The effective state is base + pending ops, computed on read.
 
 This gives us:
-- Preview for free (read through the session layer).
-- Separation of actors (user session + nested copilot session = two layers).
+- Preview for free (read through the ops layer).
+- Separation of actors (engine ops + nested copilot session = two layers).
 - Clean undo (remove an op from the layer, layer recomputes).
 - Audit trail (the op list is the audit log).
 
-### 1.3 Why nest the copilot layer inside the user layer
+### 1.3 Why nest the copilot layer inside the engine layer
 
 **Alternative considered.** A flat model where every op is tagged with an actor (`actor: 'user' | 'copilot'`). UI filters to render "my edits" vs "copilot's proposed edits."
 
 **Why we rejected it.** Approval semantics get murky. If copilot and user both edited `/foo`, which wins when the user clicks "approve all"? What does "revert my edit" mean when copilot's edit shadows it? Flat actor tagging pushes these decisions out to every consumer.
 
-**What we did instead.** Nested layers: base → user draft → copilot draft. Copilot ops physically live in a separate layer on top. Approving a copilot op means folding it down into the user layer; declining means dropping it. The layer structure *is* the review model. The UI gets a clean `userSession.diff()` and `copilotSession.diff()` with no overlap to sort out.
+**What we did instead.** Nested layers: base → engine ops → copilot ops. Copilot ops physically live in a separate layer on top. Approving a copilot op means folding it down into the engine layer; declining means dropping it. The layer structure *is* the review model. The UI gets a clean `engine.diff()` and `copilotSession.diff()` with no overlap to sort out.
 
 ### 1.4 One copilot session at a time
 
@@ -94,7 +94,17 @@ This gives us:
 1. It's confusing for the user. If they ask copilot two things in parallel and get two proposal sets, the review UI has to disambiguate — and each proposal might touch overlapping paths with no defined precedence.
 2. We don't have a use case that justifies it. Sequential copilot sessions (ask, review, approve, ask again) cover the workflow we care about.
 
-**What we did instead.** Exactly one copilot session nested inside the user session at any time. Sequential copilot sessions are fine; concurrent ones are out of scope for v0.
+**What we did instead.** Exactly one copilot session nested inside the engine at any time. Sequential copilot sessions are fine; concurrent ones are out of scope for v0.
+
+### 1.5 Continuous editing replaces user sessions
+
+**The original design.** The engine had a `UserSession` class with explicit open/close lifecycle. The user called `engine.startUserSession()` to begin editing and `session.commit()` / `session.discard()` to end. This mirrored a transactional model.
+
+**Why we changed it.** The session lifecycle didn't match the user's mental model. They expect one continuous editing experience — type, undo, type more, apply when ready — not a series of transactions. The open/close ceremony added friction without adding value. The "commit" name was misleading too — it sounded like a Git commit (permanent, non-reversible), when the intent was more like "save" (fold changes, keep editing).
+
+**What we did instead.** The editing methods (`propose`, `revert`, `undo`, `redo`, `diff`, `diffTree`) moved directly onto the `Engine`. No session to open or close — the engine is always ready for edits. `commit()` became `apply()`, which folds ops into the base and resets the diff, but crucially **preserves the undo stack**. The user can undo through an apply boundary, just like Cmd+S in a document editor doesn't erase your undo history.
+
+The **copilot session** kept its session lifecycle because it genuinely is transactional — the copilot's proposals need explicit review before entering the user's edit history. The asymmetry is intentional: continuous for the user, transactional for copilot review.
 
 ---
 
@@ -102,7 +112,7 @@ This gives us:
 
 ### 2.1 Why JSON Patch–shaped ops
 
-**Alternative considered.** Custom operation types, method calls like `session.setField('/foo', 5)` with no uniform op representation.
+**Alternative considered.** Custom operation types, method calls like `engine.setField('/foo', 5)` with no uniform op representation.
 
 **Why we rejected it.** Copilot output is the tell. LLMs are already good at emitting JSON Patch (RFC 6902) because it's a well-known spec. If we use a custom op shape, we either force the copilot to emit our custom shape (harder) or translate on the way in (brittle). JSON Patch is the common language.
 
@@ -119,15 +129,15 @@ This gives us:
 
 **What we did instead.** `add`, `remove`, `replace` only. A UI-level "move" is two ops: `remove` at the old path, `add` at the new one. We lose the intent ("this is a move, not two unrelated edits") but gain simplicity.
 
-### 2.3 The identity rule: one op per path per session
+### 2.3 The identity rule: one op per path
 
 **Why it matters.** This is the quiet hero of the design. It makes revert unambiguous (there's always exactly one active op at a path to remove), makes diffs trivial to compute (scan the op list), and kills a class of bugs around op dependencies.
 
-**The scenario it governs.** User proposes `replace /foo = 1`, then `replace /foo = 2`. In a naive model, both ops are in the session and the second shadows the first. What does `revert('/foo')` do — remove both? Remove one? Which one?
+**The scenario it governs.** User proposes `replace /foo = 1`, then `replace /foo = 2`. In a naive model, both ops are in the layer and the second shadows the first. What does `revert('/foo')` do — remove both? Remove one? Which one?
 
-**The answer.** One active op per path. When the second `replace /foo` comes in, it supersedes the first — the first is shadowed (not deleted from history, but no longer visible). `revert('/foo')` removes the current active op (the one with value 2), and the path returns to the value from the layer below the session. It does **not** "uncover" the shadowed op.
+**The answer.** One active op per path. When the second `replace /foo` comes in, it supersedes the first — the first is shadowed (not deleted from history, but no longer visible). `revert('/foo')` removes the current active op (the one with value 2), and the path returns to the value from the layer below. It does **not** "uncover" the shadowed op.
 
-This matches user intuition from the original story: *"User can't revert op 2, because op 4 is on top in that session. Does that make sense? The ID is the path."*
+This matches user intuition from the original story: *"User can't revert op 2, because op 4 is on top. Does that make sense? The ID is the path."*
 
 ---
 
@@ -137,7 +147,7 @@ This matches user intuition from the original story: *"User can't revert op 2, b
 
 Early in the design we conflated "undo" with "revert." They're related but distinct:
 
-- **`undo()`** — reverses the most recent action in the session. UI target: the global undo button. Order-dependent (pops from the stack).
+- **`undo()`** — reverses the most recent action. UI target: the global undo button. Order-dependent (pops from the stack).
 - **`revert(path)`** — removes the active op at a specific path, regardless of when it was proposed. UI target: the X button next to a specific value in a diff view. Position-independent.
 
 Both exist because they serve different UI affordances.
@@ -150,21 +160,21 @@ Both exist because they serve different UI affordances.
 
 Every editor you've used (VS Code, Word, Photoshop) works this way. We follow suit.
 
-### 3.3 Per-session stacks
+### 3.3 Separate stacks for engine and copilot
 
-**Alternative considered.** One global undo/redo stack for the engine.
+**Alternative considered.** One global undo/redo stack for everything.
 
 **Why we rejected it.** Actor boundaries would leak. Undoing in the middle of a copilot session could silently reverse user edits, which breaks the mental model of the user being king of their own layer.
 
-**What we did instead.** Each session — user and copilot — owns its own pair of stacks. Undoing in the copilot session touches only copilot ops; the user's history is separate.
+**What we did instead.** The engine and each copilot session own their own pair of stacks. Undoing in the copilot session touches only copilot ops; the user's history is separate.
 
 ### 3.4 Actions vs ops in the stack
 
 **The scenario.** User does:
-1. `propose add /a = {}`
-2. `propose add /a/b = 5`
-3. `revert('/a')` — cascades to remove `/a/b` too.
-4. `undo()`
+1. `engine.propose({ kind: 'add', path: '/a', value: {} })`
+2. `engine.propose({ kind: 'add', path: '/a/b', value: 5 })`
+3. `engine.revert('/a')` — cascades to remove `/a/b` too.
+4. `engine.undo()`
 
 What should undo do? If the stack holds raw ops, undo pops one and only one. We'd need three undos to restore both `/a` and `/a/b`, which is confusing — step 3 was a single user gesture.
 
@@ -186,11 +196,11 @@ What should undo do? If the stack holds raw ops, undo pops one and only one. We'
 
 **Discussion.** The user asked: *"Would this just be considered like an add, but if the parent paths got removed, then that should be removed too, so I add a, and then I add a.b, and if I revert a, I reverted a.b too."*
 
-**The principle.** Reverting a parent path reverts every descendant op in the same session, because the child ops have no meaningful existence without their parent. If you undo "create the folder," the files inside go too.
+**The principle.** Reverting a parent path reverts every descendant op, because the child ops have no meaningful existence without their parent. If you undo "create the folder," the files inside go too.
 
-**The rule.** `session.revert(path)` removes:
+**The rule.** `engine.revert(path)` removes:
 1. The active op at `path`.
-2. Every active op at a descendant path in the same session.
+2. Every active op at a descendant path.
 
 All removed ops are grouped as one action on the undo stack, so `undo()` brings them all back together.
 
@@ -206,7 +216,7 @@ All removed ops are grouped as one action on the undo stack, so `undo()` brings 
 
 RFC 6902 treats array indices as op identifiers. Remove at `/items/1` means "remove the thing at position 1." But positional indices aren't stable identifiers — they shift whenever any other op touches the array.
 
-**The breakage.** Base is `[1, 2, 3]`. Session has two ops:
+**The breakage.** Base is `[1, 2, 3]`. The engine has two ops:
 
 - Op A: `remove /items/1` — removes the `2`, array is now `[1, 3]`.
 - Op B: `replace /items/1 = 99` — targets what *is* at position 1 now, which is the `3`.
@@ -272,10 +282,10 @@ The objection would be: "Now you have a proprietary internal format instead of p
 
 ## 5. Diffs and the review model
 
-### 5.1 Each session diffs against the layer below
+### 5.1 Each layer diffs against the layer below
 
-- `userSession.diff()` → the user's ops vs. base.
-- `copilotSession.diff()` → copilot's ops vs. the current user session state.
+- `engine.diff()` → the user's pending ops vs. base.
+- `copilotSession.diff()` → copilot's ops vs. the current engine state (base + user ops).
 
 This falls out of the layered model for free. It also means the two diffs are naturally disjoint: the user's review pane shows copilot's proposed changes, and the user's draft view shows their own edits — no filtering or cross-referencing needed.
 
@@ -324,7 +334,7 @@ Last-write-wins is technically defensible but surprising. The user deserves a wa
 
 **The rule.** In `copilotSession.diff()`, each entry may carry `conflictsWithUser: true` when the user has already edited an overlapping path (equal or related by ancestry/descent) *before* the copilot proposed. The flag is advisory: approval still proceeds last-write-wins, but the UI should render a warning indicator (e.g. yellow highlight, "this will overwrite your edit") so the user doesn't clobber by reflex.
 
-**Why only copilot diffs carry the flag.** The user diffs against the base. The base can't "conflict" with the user — the user is the primary actor making first-order changes to the base. There's no second actor in the user session to conflict with.
+**Why only copilot diffs carry the flag.** The engine diffs against the base. The base can't "conflict" with the user — the user is the primary actor making first-order changes to the base. There's no second actor in the engine layer to conflict with.
 
 **Why the reverse direction doesn't need the flag.** When the user edits a path *after* copilot proposed into it, the engine automatically resolves (see §5). No flag needed — the resolution already happened.
 
@@ -336,7 +346,7 @@ This is the trickiest area of the design. It earned its own section because the 
 
 ### 6.1 The setup
 
-A copilot session is open with pending proposals. The user continues editing through the user session — in parallel to reviewing copilot's work. What happens when the user's edit touches a path that overlaps with a copilot proposal?
+A copilot session is open with pending proposals. The user continues editing directly through `engine.propose()` — in parallel to reviewing copilot's work. What happens when the user's edit touches a path that overlaps with a copilot proposal?
 
 ### 6.2 The four cases
 
@@ -371,7 +381,7 @@ Each case required its own analysis.
 
 The user literally couldn't edit `/server/port` unless `/server` existed. By editing a descendant, they're building on copilot's structure — which is implicit acceptance of the parent.
 
-**The rule.** Auto-accept the copilot op. The `/server` op is folded into the user layer. The user's `/server/port` op lands next. Both are now in the user session as separate actions on the undo stack, so:
+**The rule.** Auto-accept the copilot op. The `/server` op is folded into the engine's op set. The user's `/server/port` op lands next. Both are now in the engine as separate actions on the undo stack, so:
 - Undo once → removes `/server/port`.
 - Undo twice → removes `/server` (the auto-accepted copilot op).
 - Revert `/server` → cascades and removes both, as one action.
@@ -424,11 +434,11 @@ Short entries — each captures a decision, the alternatives, and the reasoning.
 
 **Decision.** Throw `NoOpAtPathError`. Silent no-ops hide caller bugs (stale UI state, typos, wrong path). Callers who want the "revert if present" semantics can catch and ignore — but the default should surface bugs, not hide them.
 
-### 7.2 Session IDs are internal only
+### 7.2 No session IDs needed
 
-**Alternatives.** Expose `session.id` publicly; keep internal.
+**Alternatives.** Expose session IDs publicly; keep internal.
 
-**Decision.** Internal only in v0. The engine holds at most one user session and one copilot session at a time, so the caller always knows which session they're holding a reference to. IDs may become necessary in v2 when server-side multi-session lands.
+**Decision.** Not needed in v0. With continuous editing on the engine and at most one copilot session at a time, there's nothing to disambiguate. IDs may become necessary in v2 when server-side multi-user lands.
 
 ### 7.3 Copilot session lifecycle
 
@@ -462,13 +472,13 @@ Schema validation is the single largest feature gap between prototype and produc
 
 **Why.** The domain is copilot-assisted editing. Over-abstracting the name now ("there might be a linter actor too someday") makes the API harder to read for the common case without providing real value. If a second non-user actor materializes, that's a real design change requiring its own analysis, not something we should paper over with generic naming today.
 
-### 7.7 One user session per engine (vs. named multi-session)
+### 7.7 One engine per editing context
 
-**Alternative considered.** Engine holds a map of named user sessions, even if the v0 API only exposes one.
+**Alternative considered.** Engine holds a map of named editing contexts or sessions.
 
-**Decision.** One user session per engine. Multiple tabs or tenants construct separate engine instances.
+**Decision.** One engine instance per editing context. Multiple tabs or tenants construct separate engine instances.
 
-**Why.** The deployment model is browser-local: one engine instance per UI context (tab, tenant, whatever the host app considers a scope). Multi-session within one engine would be the right abstraction for server-side, where one engine might serve multiple users. We don't have that use case in v0 and shouldn't design for it.
+**Why.** The deployment model is browser-local: one engine instance per UI context (tab, tenant, whatever the host app considers a scope). Multi-user within one engine would be the right abstraction for server-side. We don't have that use case in v0 and shouldn't design for it.
 
 ### 7.8 No built-in MCP server
 
@@ -486,7 +496,7 @@ Not every idea survived the design discussion. Noting the cuts so they aren't re
 
 ### 8.1 Global undo stack
 
-Rejected in favor of per-session stacks. Actor boundaries would leak — undoing during copilot review could reverse user work, which contradicts "user is king."
+Rejected in favor of separate stacks for engine and copilot. Actor boundaries would leak — undoing during copilot review could reverse user work, which contradicts "user is king."
 
 ### 8.2 Flat actor tagging (no nested copilot layer)
 
@@ -496,9 +506,9 @@ Rejected. Approval semantics get murky when user and copilot edits are interming
 
 Rejected for v0. Confusing for the user, no clear precedence rules, no driving use case.
 
-### 8.4 Public session IDs in v0
+### 8.4 Explicit user session lifecycle
 
-Rejected for v0. Not needed (single-session-at-a-time), revisit in v2.
+Rejected. The original `UserSession` class with `startUserSession()` / `commit()` / `discard()` was replaced by continuous editing directly on the `Engine` with `apply()`. See §1.5 for the full rationale.
 
 ### 8.5 Redo as a post-v0 feature
 
@@ -528,12 +538,14 @@ Deferred. v0 is in-memory with export-on-demand. Serialization format and hydrat
 
 **Batch propose.** Out of scope for v0. Callers propose one op at a time. If a batch API becomes necessary, it can be added as `proposeBatch(ops)` in a later version without breaking the single-op API. Atomicity semantics (all-or-nothing vs per-op) can be decided then.
 
+**Undo on empty stack.** No-op. Matches standard editor behavior (VS Code, Word, etc.). No throw — silently doing nothing on empty undo/redo is a UI expectation.
+
+**Continuous editing replaces user sessions.** The `UserSession` class with explicit open/close lifecycle was replaced by editing methods directly on `Engine`. `commit()` / `discard()` were replaced by `apply()`, which folds ops into the base while preserving the undo stack. See §1.5 for the full rationale.
+
 ### 9.2 Still open
 
-**Error model completeness.** `NoOpAtPathError` is named. `SessionAlreadyOpenError`, `CopilotAlreadyOpenError`, `SessionClosedError`, `PathNotFoundError`, `InvalidPathError`, `CopilotSessionOpenError` (on commit) are plausible additions. A complete taxonomy should be enumerated before implementation settles.
+**Error model completeness.** `NoOpAtPathError`, `PathNotFoundError`, `InvalidPathError`, `CopilotSessionOpenError` (on apply) are implemented. A complete taxonomy should be enumerated before the API stabilizes.
 
-**Copilot op targeting after auto-accept.** When a user edit auto-accepts a copilot op at `/server`, and then copilot (still in the same session) proposes another op touching `/server/something`, does the engine treat that as "copilot is editing the user's layer" (already accepted the context) or "copilot is proposing a new change under the newly-folded parent"? Likely the latter, but worth confirming with a scenario.
+**Copilot op targeting after auto-accept.** When a user edit auto-accepts a copilot op at `/server`, and then copilot (still in the same session) proposes another op touching `/server/something`, does the engine treat that as "copilot is editing the engine's layer" (already accepted the context) or "copilot is proposing a new change under the newly-folded parent"? Likely the latter, but worth confirming with a scenario.
 
-**Undo on empty stack.** No-op or throw? Leaning no-op (matches most editor behaviors), but not final.
-
-**Version counter overflow / reset.** Does the counter reset on `commit`? Stay monotonic forever? What happens at `Number.MAX_SAFE_INTEGER`? (Unlikely in practice, but worth noting.)
+**Version counter overflow / reset.** Does the counter reset on `apply()`? Stay monotonic forever? What happens at `Number.MAX_SAFE_INTEGER`? (Unlikely in practice, but worth noting.)
