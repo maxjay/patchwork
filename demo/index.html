@@ -29,18 +29,34 @@
       </div>
 
       <div id="copilot-section">
-        <div id="copilot-inactive">
-          <button id="start-copilot" class="btn">Start Copilot Session</button>
+        <h3>Copilot Proposals</h3>
+        <div id="copilot-proposals"><div class="no-ops">No active session</div></div>
+        <div id="copilot-bulk" class="copilot-bulk hidden">
+          <button id="approve-all" class="btn btn-approve">Approve All</button>
+          <button id="decline-all" class="btn btn-decline">Decline All</button>
+          <button id="end-session" class="btn btn-small">End Session</button>
         </div>
-        <div id="copilot-active" class="hidden">
-          <h3>Copilot Proposals</h3>
-          <div id="copilot-proposals"></div>
-          <div class="copilot-bulk">
-            <button id="approve-all" class="btn btn-approve">Approve All</button>
-            <button id="decline-all" class="btn btn-decline">Decline All</button>
-            <button id="end-session" class="btn btn-small">End Session</button>
-          </div>
+      </div>
+    </div>
+
+    <div class="panel chat-panel">
+      <h2>Copilot Chat</h2>
+      <details class="provider-settings" open>
+        <summary>Provider</summary>
+        <div class="provider-fields">
+          <select id="provider" class="provider-select">
+            <option value="anthropic">Anthropic</option>
+            <option value="openai-compat">OpenAI-compatible</option>
+          </select>
+          <input id="endpoint" class="provider-input" placeholder="Endpoint URL (leave blank for default)" />
+          <input id="model-name" class="provider-input" placeholder="Model (leave blank for default)" />
+          <input id="api-key" type="password" class="provider-input" placeholder="API key (optional for local)" />
         </div>
+      </details>
+      <div id="chat-messages" class="chat-messages"></div>
+      <div class="chat-input-row">
+        <input id="chat-input" class="chat-input" placeholder="Ask the copilot to edit the config..." />
+        <button id="chat-send" class="btn btn-small">Send</button>
       </div>
     </div>
 

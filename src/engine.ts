@@ -31,6 +31,7 @@ export class Engine<T = unknown> {
   private _redoStack: Action[] = [];
   private _version = 0;
   private _opts: EngineOptions<T>;
+  private _listeners: Set<() => void> = new Set();
   /** @internal */
   _nextKey: number;
 
@@ -53,6 +54,12 @@ export class Engine<T = unknown> {
   /** @internal */
   _bump(): void {
     this._version++;
+    for (const fn of this._listeners) fn();
+  }
+
+  onChange(fn: () => void): () => void {
+    this._listeners.add(fn);
+    return () => { this._listeners.delete(fn); };
   }
 
   // ─── Read ──────────────────────────────────────────────────────────────────
@@ -78,6 +85,31 @@ export class Engine<T = unknown> {
     return unkeyify(current);
   }
 
+  getBase(path: string): unknown {
+    const segments = parsePath(path);
+    let current = this._base;
+    for (const seg of segments) {
+      if (current === null || current === undefined) return undefined;
+      if (isKeyedArray(current)) {
+        const idx = Number(seg);
+        if (seg === '-' || !Number.isInteger(idx) || idx < 0 || idx >= current.length) return undefined;
+        current = current[idx].value;
+      } else if (typeof current === 'object') {
+        current = (current as Record<string, unknown>)[seg];
+      } else {
+        return undefined;
+      }
+    }
+    return unkeyify(current);
+  }
+
+  getDiff(path: string): { base: unknown; current: unknown } | null {
+    const base = this.getBase(path);
+    const current = this.get(path);
+    if (base === current) return null;
+    return { base, current };
+  }
+
   export(): T {
     return unkeyify(this._currentState()) as T;
   }
@@ -94,6 +126,12 @@ export class Engine<T = unknown> {
       }
       this._proposeOn(this._ops, this._undoStack, this._redoStack, inp, 'user');
     }
+  }
+
+  // ─── Move / Rename ──────────────────────────────────────────────────────────
+
+  move(from: string, to: string): void {
+    this._moveOn(this._ops, this._undoStack, this._redoStack, from, to, 'user');
   }
 
   // ─── Revert ────────────────────────────────────────────────────────────────
@@ -218,6 +256,53 @@ export class Engine<T = unknown> {
     this._bump();
   }
 
+  /** @internal — move/rename: remove from source, add at destination, one undo step. */
+  _moveOn(
+    ops: Map<string, Op>,
+    undoStack: Action[],
+    redoStack: Action[],
+    from: string,
+    to: string,
+    actor: 'user' | 'copilot',
+  ): void {
+    const { internalPath: fromPath } = this._resolve(from, 'remove');
+    const { internalPath: toPath, insertAt } = this._resolve(to, 'add');
+
+    const prev = this._valueAt(fromPath);
+    if (prev === undefined) throw new PathNotFoundError(from);
+
+    // Collect the effective value at the source (base + ops, keyed)
+    const state = this._currentState();
+    const value = getBySegments(state, parsePath(fromPath));
+
+    // Remove descendant ops at source — their values are folded into the moved value
+    const removedDescendants: Op[] = [];
+    for (const [opPath, pendingOp] of ops) {
+      if (isDescendant(opPath, fromPath)) {
+        removedDescendants.push(pendingOp);
+        ops.delete(opPath);
+      }
+    }
+
+    const removeOp: Op = {
+      path: fromPath, kind: 'remove', prev, actor, ts: Date.now(),
+    };
+    const addOp: Op = {
+      path: toPath, kind: 'add', value, actor, ts: Date.now(), insertAt,
+    };
+
+    if (actor === 'user' && this._copilotOps) {
+      this._autoResolveCopilotOps(fromPath);
+      this._autoResolveCopilotOps(toPath);
+    }
+
+    ops.set(fromPath, removeOp);
+    ops.set(toPath, addOp);
+    undoStack.push({ kind: 'propose', ops: [removeOp, addOp], undone: removedDescendants.length > 0 ? removedDescendants : undefined });
+    redoStack.length = 0;
+    this._bump();
+  }
+
   /** @internal — revert an op from a given layer. */
   _revertOn(
     ops: Map<string, Op>,
@@ -262,6 +347,12 @@ export class Engine<T = unknown> {
         const earlier = this._findEarlierOpIn(undoStack, op.path);
         if (earlier) ops.set(op.path, earlier);
       }
+      // Restore descendant ops removed by move
+      if (action.undone) {
+        for (const op of action.undone) {
+          ops.set(op.path, op);
+        }
+      }
     } else if (action.kind === 'revert') {
       if (action.undone) {
         for (const op of action.undone) {
@@ -299,6 +390,12 @@ export class Engine<T = unknown> {
     if (action.kind === 'propose' || action.kind === 'approve') {
       for (const op of action.ops) {
         ops.set(op.path, op);
+      }
+      // Re-remove descendant ops for move redo
+      if (action.undone) {
+        for (const op of action.undone) {
+          ops.delete(op.path);
+        }
       }
     } else if (action.kind === 'revert') {
       if (action.undone) {
@@ -404,7 +501,9 @@ export class Engine<T = unknown> {
 
     for (const [copPath] of this._copilotOps) {
       if (copPath === userPath) {
-        toDecline.push(copPath);
+        // User is editing the same path copilot proposed on — accept the copilot
+        // op first so the user's edit layers on top with correct prev.
+        toAccept.push(copPath);
       } else if (isDescendant(userPath, copPath)) {
         toAccept.push(copPath);
       } else if (isAncestor(userPath, copPath)) {

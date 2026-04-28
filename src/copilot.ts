@@ -46,6 +46,11 @@ export class CopilotSession {
     }
   }
 
+  move(from: string, to: string): void {
+    this._assertOpen();
+    this._engine._moveOn(this._ops, this._undoStack, this._redoStack, from, to, 'copilot');
+  }
+
   revert(path: string): void {
     this._assertOpen();
     this._engine._revertOn(this._ops, this._undoStack, this._redoStack, path);

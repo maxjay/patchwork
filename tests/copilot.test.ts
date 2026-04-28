@@ -105,4 +105,55 @@ describe('COPILOT — Propose, approve, decline', () => {
     cs.end();
     expect(() => cs.propose({ kind: 'add', path: '/a', value: 1 })).toThrow(SessionClosedError);
   });
+
+  it('user editing a copilot-proposed field auto-accepts it and preserves undo chain', () => {
+    const engine = new Engine({ server: { host: 'localhost', port: 8080 } });
+    const cs = engine.startCopilot();
+
+    // Copilot proposes adding a name field
+    cs.propose({ kind: 'add', path: '/server/name', value: 'jeff' });
+    expect(engine.export()).toEqual({ server: { host: 'localhost', port: 8080, name: 'jeff' } });
+
+    // User edits the copilot-proposed field in the editor
+    engine.propose({ kind: 'replace', path: '/server/name', value: 'Hello' });
+
+    // Copilot proposal should be gone (auto-accepted into user ops)
+    expect(cs.diff()).toEqual([]);
+    expect(engine.export()).toEqual({ server: { host: 'localhost', port: 8080, name: 'Hello' } });
+
+    // Undo should go back to copilot's proposed value, not remove the field
+    engine.undo();
+    expect(engine.export()).toEqual({ server: { host: 'localhost', port: 8080, name: 'jeff' } });
+
+    // Undo again removes the auto-accepted copilot op
+    engine.undo();
+    expect(engine.export()).toEqual({ server: { host: 'localhost', port: 8080 } });
+  });
+
+  it('user editing a descendant of copilot-proposed field auto-accepts parent', () => {
+    const engine = new Engine({ server: { host: 'localhost', port: 8080 } });
+    const cs = engine.startCopilot();
+
+    // Copilot proposes adding a colour object
+    cs.propose({ kind: 'add', path: '/server/colour', value: { r: 0, g: 0, b: 255 } });
+
+    // User edits a child of the copilot-proposed object
+    engine.propose({ kind: 'replace', path: '/server/colour/g', value: 120 });
+
+    // Copilot proposal auto-accepted
+    expect(cs.diff()).toEqual([]);
+    expect(engine.export()).toEqual({
+      server: { host: 'localhost', port: 8080, colour: { r: 0, g: 120, b: 255 } },
+    });
+
+    // Undo the user's edit
+    engine.undo();
+    expect(engine.export()).toEqual({
+      server: { host: 'localhost', port: 8080, colour: { r: 0, g: 0, b: 255 } },
+    });
+
+    // Undo the auto-accept
+    engine.undo();
+    expect(engine.export()).toEqual({ server: { host: 'localhost', port: 8080 } });
+  });
 });
