@@ -2,7 +2,7 @@ export { Engine } from './engine.js';
 export { CopilotSession } from './copilot.js';
 export type { Op, OpInput, DiffEntry, DiffTreeNode, NodeInfo, Action, SchemaError } from './types.js';
 export {
-  OnionskinError,
+  PatchworkError,
   CopilotAlreadyOpenError,
   SessionClosedError,
   CopilotSessionOpenError,

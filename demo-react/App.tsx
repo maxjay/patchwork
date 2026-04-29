@@ -28,7 +28,7 @@ export function App() {
   return (
     <div className="app">
       <header>
-        <h1>onionskin</h1>
+        <h1>patchwork</h1>
         <span className="subtitle">copilot-native JSON editing engine</span>
       </header>
 

@@ -11,7 +11,7 @@ import type { Engine } from '../engine.js';
 import { createEditTools } from '../tools/index.js';
 
 export type McpServerOptions = {
-  /** Server name reported to MCP clients. Default: "onionskin" */
+  /** Server name reported to MCP clients. Default: "patchwork" */
   name?: string;
   /** Server version. Default: "0.0.1" */
   version?: string;
@@ -24,8 +24,8 @@ export type McpServerOptions = {
  * Connect via stdio (default) or bring your own transport.
  *
  * ```ts
- * import { Engine } from 'onionskin';
- * import { createMcpServer } from 'onionskin/mcp';
+ * import { Engine } from 'patchwork';
+ * import { createMcpServer } from 'patchwork/mcp';
  *
  * const engine = new Engine({ host: 'localhost', port: 8080 });
  * const { server, connect } = createMcpServer(engine);
@@ -36,7 +36,7 @@ export function createMcpServer(engine: Engine, opts?: McpServerOptions) {
   const tools = createEditTools(engine);
 
   const server = new Server(
-    { name: opts?.name ?? 'onionskin', version: opts?.version ?? '0.0.1' },
+    { name: opts?.name ?? 'patchwork', version: opts?.version ?? '0.0.1' },
     { capabilities: { tools: {}, resources: {} } },
   );
 
