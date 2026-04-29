@@ -43,14 +43,33 @@ export class Engine<T = unknown> {
   }
 
   private _runValidate(state: unknown): void {
-    if (!this._validator) return;
-    if (!this._validator(state)) {
-      const errors = (this._validator.errors ?? []).map((e) => ({
-        path: e.instancePath || '/',
-        message: e.message ?? 'invalid',
-      }));
-      throw new ValidationError(errors);
-    }
+    const error = this._validateState(state);
+    if (error) throw error;
+  }
+
+  private _validateState(state: unknown): ValidationError | null {
+    if (!this._validator) return null;
+    if (this._validator(state)) return null;
+    const errors = (this._validator.errors ?? []).map((e) => ({
+      path: e.instancePath || '/',
+      keyword: e.keyword,
+      message: e.message ?? 'invalid',
+      params: e.params,
+    }));
+    return new ValidationError(errors);
+  }
+
+  /**
+   * Check whether setting `value` at `path` would produce a schema-valid state.
+   * Pure — does not mutate state, stage ops, or bump version.
+   * Returns `null` if valid, or a `ValidationError` describing what would fail.
+   * If no schema was provided to the engine, always returns `null`.
+   */
+  checkValue(path: string, value: unknown): ValidationError | null {
+    if (!this._validator) return null;
+    const segments = parsePath(path);
+    const trial = setBySegments(this._currentState(), segments, deepCopy(value));
+    return this._validateState(trial);
   }
 
   get version(): number {

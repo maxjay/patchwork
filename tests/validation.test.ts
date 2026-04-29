@@ -123,4 +123,69 @@ describe('VALIDATION — Schema validation', () => {
     expect(() => session.propose({ kind: 'replace', path: '/port', value: 443 })).not.toThrow();
     expect(session.diff()).toHaveLength(1);
   });
+
+  it('VAL-16: checkValue returns null for valid value', () => {
+    const engine = new Engine(BASE, SCHEMA);
+    expect(engine.checkValue('/port', 443)).toBeNull();
+  });
+
+  it('VAL-17: checkValue returns ValidationError for invalid value', () => {
+    const engine = new Engine(BASE, SCHEMA);
+    const err = engine.checkValue('/port', 'abc');
+    expect(err).not.toBeNull();
+    expect(err!.errors[0].path).toBe('/port');
+    expect(err!.errors[0].keyword).toBe('type');
+  });
+
+  it('VAL-18: checkValue does not mutate state', () => {
+    const engine = new Engine(BASE, SCHEMA);
+    const versionBefore = engine.version;
+    engine.checkValue('/port', 'abc');
+    engine.checkValue('/port', 9999);
+    expect(engine.version).toBe(versionBefore);
+    expect(engine.diff()).toHaveLength(0);
+    expect(engine.get('/port')).toBe(8080);
+  });
+
+  it('VAL-19: checkValue returns null when no schema', () => {
+    const engine = new Engine(BASE);
+    expect(engine.checkValue('/port', 'literally anything')).toBeNull();
+  });
+
+  it('VAL-20: SchemaError includes keyword and params for minimum', () => {
+    const engine = new Engine(BASE, SCHEMA);
+    const err = engine.checkValue('/port', 0);
+    expect(err).not.toBeNull();
+    expect(err!.errors[0].keyword).toBe('minimum');
+    expect(err!.errors[0].params).toMatchObject({ limit: 1 });
+  });
+
+  it('VAL-21: SchemaError includes params for enum', () => {
+    const engine = new Engine({ ...BASE, mode: 'dev' }, SCHEMA);
+    const err = engine.checkValue('/mode', 'invalid');
+    expect(err).not.toBeNull();
+    expect(err!.errors[0].keyword).toBe('enum');
+    expect(err!.errors[0].params).toMatchObject({ allowedValues: ['dev', 'staging', 'prod'] });
+  });
+
+  it('VAL-22: SchemaError includes params for required', () => {
+    const engine = new Engine(BASE, SCHEMA);
+    const err = engine.checkValue('', { name: 'svc' }); // missing required port
+    expect(err).not.toBeNull();
+    const requiredErr = err!.errors.find((e) => e.keyword === 'required');
+    expect(requiredErr).toBeDefined();
+    expect(requiredErr!.params).toMatchObject({ missingProperty: 'port' });
+  });
+
+  it('VAL-23: thrown ValidationError carries enriched errors too', () => {
+    const engine = new Engine(BASE, SCHEMA);
+    try {
+      engine.propose({ kind: 'replace', path: '/port', value: 0 });
+      expect.fail('should have thrown');
+    } catch (err) {
+      const ve = err as ValidationError;
+      expect(ve.errors[0].keyword).toBe('minimum');
+      expect(ve.errors[0].params).toMatchObject({ limit: 1 });
+    }
+  });
 });
