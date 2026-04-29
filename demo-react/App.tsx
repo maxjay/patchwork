@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect } from 'react';
+import { useRef } from 'react';
 import { useEngine, useNode, useExport } from '../src/react/index.js';
 import type { Engine } from '../src/engine.js';
 import type { NodeInfo } from '../src/types.js';
@@ -45,7 +45,7 @@ const SCHEMA = {
   },
 };
 
-// ─── App ────────────────────────────────────────────────────────────────────
+// ─── App ─────────────────────────────────────────────────────────────────────
 
 export function App() {
   const engine = useEngine(INITIAL_CONFIG, SCHEMA);
@@ -61,21 +61,34 @@ export function App() {
         <div className="main-col">
           <section className="card">
             <div className="card-header">
-              <h2>Editor</h2>
+              <h2>Document</h2>
               <div className="toolbar">
                 <button onClick={() => engine.undo()}>Undo</button>
                 <button onClick={() => engine.redo()}>Redo</button>
                 <button className="btn-accent" onClick={() => engine.apply()}>Apply</button>
               </div>
             </div>
-
             <Node engine={engine} path="" depth={0} />
-
-            <AddField engine={engine} />
-            <MoveField engine={engine} />
           </section>
+
+          <section className="card">
+            <h2>User Actions</h2>
+            <div className="ops-list">
+              <ActionButton engine={engine} label="set /server/port → 443" op={{ kind: 'replace', path: '/server/port', value: 443 }} />
+              <ActionButton engine={engine} label="set /server/host → 0.0.0.0" op={{ kind: 'replace', path: '/server/host', value: '0.0.0.0' }} />
+              <ActionButton engine={engine} label="set /timeout → 60" op={{ kind: 'replace', path: '/timeout', value: 60 }} />
+              <ActionButton engine={engine} label="toggle /features/darkMode" op={{ kind: 'replace', path: '/features/darkMode', value: !INITIAL_CONFIG.features.darkMode }} />
+              <ActionButton engine={engine} label="add /server/ssl → true" op={{ kind: 'add', path: '/server/ssl', value: true }} />
+              <ActionButton engine={engine} label="remove /retries" op={{ kind: 'remove', path: '/retries' }} />
+            </div>
+            <div className="empty" style={{ marginTop: 8 }}>
+              Invalid ops are rejected by the schema — try undo after any action.
+            </div>
+          </section>
+
           <CopilotSection engine={engine} />
         </div>
+
         <div className="side-col">
           <LiveDocument engine={engine} />
           <DiffPanel engine={engine} />
@@ -86,24 +99,15 @@ export function App() {
   );
 }
 
-// ─── Node (one component, one hook) ─────────────────────────────────────────
+// ─── Node — reactive, read-only display ──────────────────────────────────────
 
-function Node({
-  engine,
-  path,
-  depth,
-}: {
-  engine: Engine;
-  path: string;
-  depth: number;
-}) {
+function Node({ engine, path, depth }: { engine: Engine; path: string; depth: number }) {
   const node = useNode(engine, path);
   const renderCount = useRef(0);
   renderCount.current++;
 
   if (!node) return null;
 
-  // Container — render children
   if (node.keys) {
     return (
       <div className="node-object">
@@ -120,126 +124,43 @@ function Node({
     );
   }
 
-  // Leaf — render editable field
-  return <LeafField engine={engine} node={node} depth={depth} renderCount={renderCount.current} />;
+  return <Leaf node={node} depth={depth} renderCount={renderCount.current} />;
 }
 
-function LeafField({
-  engine,
-  node,
-  depth,
-  renderCount,
-}: {
-  engine: Engine;
-  node: NodeInfo;
-  depth: number;
-  renderCount: number;
-}) {
-  const [draft, setDraft] = useState(String(node.value));
-
-  // Sync draft when engine value changes externally (undo, copilot approve, etc.)
-  useEffect(() => {
-    setDraft(String(node.value));
-  }, [node.value]);
-
-  const parsed = parseValue(draft);
-  const validationError = engine.checkValue(node.path, parsed);
-
-  const commit = () => {
-    if (validationError || parsed === node.value) return;
-    engine.propose({ kind: 'replace', path: node.path, value: parsed });
-  };
-
+function Leaf({ node, depth, renderCount }: { node: NodeInfo; depth: number; renderCount: number }) {
   return (
-    <div
-      className={`field${node.changed ? ' changed' : ''}${validationError ? ' invalid' : ''}`}
-      style={{ paddingLeft: depth * 20 }}
-    >
+    <div className={`field${node.changed ? ' changed' : ''}`} style={{ paddingLeft: depth * 20 }}>
       <span className="render-badge" title="React render count">{renderCount}</span>
       <span className="field-key">{node.key}</span>
       <span className="field-colon">:</span>
-      <input
-        className={`field-input type-${node.type}${validationError ? ' invalid' : ''}`}
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
-        onKeyDown={(e) => { if (e.key === 'Enter') commit(); }}
-      />
-      {node.changed && !validationError && (
-        <button className="btn-reset" onClick={() => engine.reset(node.path)} title="Reset to base">
-          &#8617;
-        </button>
-      )}
-      <button className="btn-remove" onClick={() => engine.propose({ kind: 'remove', path: node.path })} title="Remove field">
-        &times;
-      </button>
-      {validationError ? (
-        <span className="validation-error">{validationError.errors[0].message}</span>
-      ) : node.changed ? (
+      <span className={`field-value type-${node.type}`}>{JSON.stringify(node.value)}</span>
+      {node.changed && (
         <span className="diff-badge">
           <span className="val-old">{JSON.stringify(node.base)}</span>
           <span className="arrow">&rarr;</span>
           <span className="val-new">{JSON.stringify(node.value)}</span>
         </span>
-      ) : null}
+      )}
     </div>
   );
 }
 
-// ─── Add Field ──────────────────────────────────────────────────────────────
+// ─── Action Button ────────────────────────────────────────────────────────────
 
-function AddField({ engine }: { engine: Engine }) {
-  const [path, setPath] = useState('');
-  const [value, setValue] = useState('');
-
-  const submit = () => {
-    if (!path) return;
-    const resolved = path.startsWith('/') ? path : `/${path}`;
-    try {
-      engine.propose({ kind: 'add', path: resolved, value: parseValue(value) });
-      setPath('');
-      setValue('');
-    } catch {
-      // schema rejected — leave inputs so user can correct
-    }
+function ActionButton({ engine, label, op }: { engine: Engine; label: string; op: Parameters<Engine['propose']>[0] }) {
+  const handleClick = () => {
+    try { engine.propose(op); } catch { /* schema rejected */ }
   };
-
   return (
-    <div className="add-row">
-      <input placeholder="path (e.g. /server/maxConn)" value={path} onChange={(e) => setPath(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') submit(); }} />
-      <input placeholder="value" value={value} onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') submit(); }} />
-      <button onClick={submit}>+ Add</button>
+    <div className="op-entry" style={{ justifyContent: 'space-between' }}>
+      <span className={`op-kind ${op.kind}`}>{op.kind}</span>
+      <span className="op-path" style={{ flex: 1, marginLeft: 6 }}>{label.replace(/^(add|replace|remove|toggle) /, '')}</span>
+      <button onClick={handleClick}>Run</button>
     </div>
   );
 }
 
-// ─── Move / Rename Field ────────────────────────────────────────────────────
-
-function MoveField({ engine }: { engine: Engine }) {
-  const [from, setFrom] = useState('');
-  const [to, setTo] = useState('');
-
-  const submit = () => {
-    if (!from || !to) return;
-    try {
-      engine.move(from, to);
-      setFrom('');
-      setTo('');
-    } catch {
-      // path not found or schema rejected
-    }
-  };
-
-  return (
-    <div className="add-row">
-      <input placeholder="from (e.g. /retries)" value={from} onChange={(e) => setFrom(e.target.value)} />
-      <input placeholder="to (e.g. /maxRetries)" value={to} onChange={(e) => setTo(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') submit(); }} />
-      <button onClick={submit}>Move</button>
-    </div>
-  );
-}
-
-// ─── Copilot Section ────────────────────────────────────────────────────────
+// ─── Copilot Section ──────────────────────────────────────────────────────────
 
 function CopilotSection({ engine }: { engine: Engine }) {
   const session = engine.activeCopilotSession();
@@ -258,7 +179,7 @@ function CopilotSection({ engine }: { engine: Engine }) {
       {!session ? (
         <div className="empty">No active copilot session. Click "Simulate Copilot" to see the approve/decline workflow.</div>
       ) : (
-        <CopilotProposals engine={engine} session={session} />
+        <CopilotProposals session={session} />
       )}
     </section>
   );
@@ -274,7 +195,7 @@ function simulateCopilot(engine: Engine) {
   ]);
 }
 
-function CopilotProposals({ engine, session }: { engine: Engine; session: CopilotSession }) {
+function CopilotProposals({ session }: { session: CopilotSession }) {
   const proposals = session.diff();
 
   if (proposals.length === 0) {
@@ -310,11 +231,10 @@ function CopilotProposals({ engine, session }: { engine: Engine; session: Copilo
   );
 }
 
-// ─── Live Document ──────────────────────────────────────────────────────────
+// ─── Live Document ────────────────────────────────────────────────────────────
 
 function LiveDocument({ engine }: { engine: Engine }) {
   const doc = useExport(engine);
-
   return (
     <section className="card">
       <h2>Live Document</h2>
@@ -324,11 +244,10 @@ function LiveDocument({ engine }: { engine: Engine }) {
   );
 }
 
-// ─── Diff Panel ─────────────────────────────────────────────────────────────
+// ─── Diff Panel ───────────────────────────────────────────────────────────────
 
 function DiffPanel({ engine }: { engine: Engine }) {
   const ops = engine.diff();
-
   return (
     <section className="card">
       <h2>User Ops ({ops.length})</h2>
@@ -351,7 +270,7 @@ function DiffPanel({ engine }: { engine: Engine }) {
   );
 }
 
-// ─── Render Tracker ─────────────────────────────────────────────────────────
+// ─── Render Tracker ───────────────────────────────────────────────────────────
 
 function RenderTracker() {
   return (
@@ -359,21 +278,10 @@ function RenderTracker() {
       <h2>Per-Path Reactivity</h2>
       <div className="empty" style={{ lineHeight: 1.6 }}>
         Each node shows a <span className="render-badge inline">n</span> badge counting
-        its React renders. Edit a single field and watch — only that field's
+        its React renders. Run an action and watch — only the affected path's
         counter increments. Object nodes only re-render when keys are
         added or removed. All powered by one hook: <code>useNode</code>.
       </div>
     </section>
   );
-}
-
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-function parseValue(raw: string): unknown {
-  if (raw === 'true') return true;
-  if (raw === 'false') return false;
-  if (raw === 'null') return null;
-  const num = Number(raw);
-  if (!isNaN(num) && raw !== '') return num;
-  return raw;
 }

@@ -197,6 +197,16 @@ button:hover {
 .field-input.type-number { color: #79c0ff; }
 .field-input.type-boolean { color: #ff7b72; }
 
+.field-value {
+  color: #c9d1d9;
+  font-size: 13px;
+  flex: 1;
+}
+
+.field-value.type-string { color: #a5d6ff; }
+.field-value.type-number { color: #79c0ff; }
+.field-value.type-boolean { color: #ff7b72; }
+
 .btn-reset,
 .btn-remove {
   background: none;
