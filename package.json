@@ -1,5 +1,5 @@
 {
-  "name": "onionskin",
+  "name": "patchwork",
   "version": "0.0.1",
   "description": "Session-based, copilot-native JSON editing engine",
   "type": "module",
@@ -44,15 +44,15 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/maxjay/onionskin.git"
+    "url": "git+https://github.com/maxjay/patchwork.git"
   },
   "keywords": [],
   "author": "",
   "license": "Apache-2.0",
   "bugs": {
-    "url": "https://github.com/maxjay/onionskin/issues"
+    "url": "https://github.com/maxjay/patchwork/issues"
   },
-  "homepage": "https://github.com/maxjay/onionskin#readme",
+  "homepage": "https://github.com/maxjay/patchwork#readme",
   "peerDependencies": {
     "react": ">=18",
     "svelte": ">=4",

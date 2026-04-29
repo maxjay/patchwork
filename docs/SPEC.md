@@ -298,8 +298,8 @@ Not a server — a **toolkit** for building one. Ships:
 **Intended usage (sketch):**
 
 ```ts
-import { Engine } from 'onionskin';
-import { createEditTools } from 'onionskin-mcp';
+import { Engine } from 'patchwork';
+import { createEditTools } from 'patchwork-mcp';
 
 const engine = new Engine(myDoc);
 const tools = createEditTools(engine);
