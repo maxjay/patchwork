@@ -1,10 +1,13 @@
 {
-  "name": "patchwork",
+  "name": "@maxjay/patchwork",
   "version": "0.0.1",
   "description": "Session-based, copilot-native JSON editing engine",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
   "exports": {
     ".": {
       "import": "./dist/index.js",
@@ -40,7 +43,8 @@
     "dev:react": "vite demo-react",
     "build": "tsc",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepublishOnly": "npm test && npm run build"
   },
   "repository": {
     "type": "git",
