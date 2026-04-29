@@ -1,6 +1,7 @@
 import { useSyncExternalStore, useRef, useMemo } from 'react';
 import { Engine } from '../engine.js';
-import type { NodeInfo } from '../types.js';
+import type { NodeInfo, Op } from '../types.js';
+import type { ValidationError } from '../errors.js';
 import { deepEqual } from '../util.js';
 
 /**
@@ -72,6 +73,64 @@ export function useNode(engine: Engine, path: string): NodeInfo | null {
  */
 export function useExport<T = unknown>(engine: Engine<T>): T {
   const sel = useMemo(() => makeSelector<T>(engine, () => engine.export()), [engine]);
+  return useSyncExternalStore(sel.subscribe, sel.snap);
+}
+
+/**
+ * Whether the engine has actions to undo. Use this to drive an undo button.
+ *
+ * ```tsx
+ * const canUndo = useCanUndo(engine);
+ * <button disabled={!canUndo} onClick={() => engine.undo()}>Undo</button>
+ * ```
+ */
+export function useCanUndo(engine: Engine): boolean {
+  const sel = useMemo(() => makeSelector(engine, () => engine.canUndo), [engine]);
+  return useSyncExternalStore(sel.subscribe, sel.snap);
+}
+
+/**
+ * Whether the engine has actions to redo. Use this to drive a redo button.
+ */
+export function useCanRedo(engine: Engine): boolean {
+  const sel = useMemo(() => makeSelector(engine, () => engine.canRedo), [engine]);
+  return useSyncExternalStore(sel.subscribe, sel.snap);
+}
+
+/**
+ * All pending ops (changes from base), reactively. Returns an empty array when
+ * nothing has been changed. Use this to build a "pending changes" review panel.
+ *
+ * ```tsx
+ * const pending = usePendingDiff(engine);
+ * // pending: Op[] — one entry per changed path
+ * ```
+ */
+export function usePendingDiff(engine: Engine): Op[] {
+  const sel = useMemo(() => makeSelector(engine, () => engine.diff()), [engine]);
+  return useSyncExternalStore(sel.subscribe, sel.snap);
+}
+
+/**
+ * Validate a prospective value against the engine's schema without committing
+ * an op. Re-runs whenever the value changes or the engine state changes.
+ * Returns `null` when valid (or when no schema was provided), or a
+ * `ValidationError` with per-field errors.
+ *
+ * ```tsx
+ * const error = useFieldValidation(engine, '/server/port', inputValue);
+ * <input style={{ borderColor: error ? 'red' : 'green' }} />
+ * ```
+ */
+export function useFieldValidation(
+  engine: Engine,
+  path: string,
+  value: unknown,
+): ValidationError | null {
+  const sel = useMemo(
+    () => makeSelector(engine, () => engine.checkValue(path, value)),
+    [engine, path, value],
+  );
   return useSyncExternalStore(sel.subscribe, sel.snap);
 }
 
