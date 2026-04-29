@@ -1,6 +1,7 @@
 import { readable, derived, type Readable } from 'svelte/store';
 import { Engine } from '../engine.js';
 import type { EngineOptions } from '../types.js';
+import { deepEqual } from '../util.js';
 
 /**
  * Create an Engine and reactive stores for its state.
@@ -44,12 +45,11 @@ export function engineStore<T = unknown>(engine: Engine<T>): Readable<number> {
  */
 export function valueStore<V = unknown>(engine: Engine, path: string): Readable<V> {
   return readable(engine.get(path) as V, (set) => {
-    let lastJson = JSON.stringify(engine.get(path));
+    let last: unknown = engine.get(path);
     return engine.onChange(() => {
       const value = engine.get(path);
-      const json = JSON.stringify(value);
-      if (json !== lastJson) {
-        lastJson = json;
+      if (!deepEqual(value, last)) {
+        last = value;
         set(value as V);
       }
     });
@@ -64,12 +64,11 @@ export function diffStore(
   path: string,
 ): Readable<{ base: unknown; current: unknown } | null> {
   return readable(engine.getDiff(path), (set) => {
-    let lastJson = JSON.stringify(engine.getDiff(path));
+    let last: unknown = engine.getDiff(path);
     return engine.onChange(() => {
       const diff = engine.getDiff(path);
-      const json = JSON.stringify(diff);
-      if (json !== lastJson) {
-        lastJson = json;
+      if (!deepEqual(diff, last)) {
+        last = diff;
         set(diff);
       }
     });
@@ -81,12 +80,11 @@ export function diffStore(
  */
 export function exportStore<T = unknown>(engine: Engine<T>): Readable<T> {
   return readable(engine.export(), (set) => {
-    let lastJson = JSON.stringify(engine.export());
+    let last: unknown = engine.export();
     return engine.onChange(() => {
       const doc = engine.export();
-      const json = JSON.stringify(doc);
-      if (json !== lastJson) {
-        lastJson = json;
+      if (!deepEqual(doc, last)) {
+        last = doc;
         set(doc);
       }
     });

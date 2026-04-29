@@ -169,6 +169,22 @@ h3 {
 .field-value.type-number { color: #79c0ff; }
 .field-value.type-boolean { color: #ff7b72; }
 
+.field-revert {
+  background: none;
+  border: none;
+  color: #484f58;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  line-height: 1;
+}
+
+.field-revert:hover {
+  color: #d29922;
+  background: rgba(187, 128, 9, 0.1);
+}
+
 .field-remove {
   background: none;
   border: none;

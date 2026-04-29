@@ -100,6 +100,7 @@ function renderObject(
         <span class="field-key">${esc(key)}</span>
         <span class="field-colon">:</span>
         <input class="field-value ${typeClass}" value="${esc(String(displayValue))}" data-path="${esc(path)}" data-original="${esc(String(displayValue))}" />
+        ${diff ? `<button class="field-revert" data-path="${esc(path)}" title="Reset to base">&#8617;</button>` : ''}
         <button class="field-remove" data-path="${esc(path)}">&times;</button>
       `;
 
@@ -128,9 +129,18 @@ $editor.addEventListener('change', (e) => {
 });
 
 $editor.addEventListener('click', (e) => {
-  const btn = (e.target as HTMLElement).closest('.field-remove') as HTMLElement | null;
-  if (!btn?.dataset.path) return;
-  engine.propose({ kind: 'remove', path: btn.dataset.path });
+  const target = e.target as HTMLElement;
+
+  const resetBtn = target.closest('.field-revert') as HTMLElement | null;
+  if (resetBtn?.dataset.path) {
+    engine.reset(resetBtn.dataset.path);
+    return;
+  }
+
+  const removeBtn = target.closest('.field-remove') as HTMLElement | null;
+  if (removeBtn?.dataset.path) {
+    engine.propose({ kind: 'remove', path: removeBtn.dataset.path });
+  }
 });
 
 $undoBtn.addEventListener('click', () => engine.undo());

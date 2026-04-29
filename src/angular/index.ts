@@ -1,5 +1,6 @@
 import { Engine } from '../engine.js';
 import type { EngineOptions } from '../types.js';
+import { deepEqual } from '../util.js';
 
 /**
  * Minimal observable interface — compatible with Angular's `async` pipe,
@@ -50,13 +51,12 @@ export function observeVersion<T = unknown>(engine: Engine<T>): Subscribable<num
 export function observeValue<V = unknown>(engine: Engine, path: string): Subscribable<V> {
   return {
     subscribe(observer) {
-      let lastJson = JSON.stringify(engine.get(path));
-      observer.next(engine.get(path) as V);
+      let last: unknown = engine.get(path);
+      observer.next(last as V);
       const unsub = engine.onChange(() => {
         const value = engine.get(path);
-        const json = JSON.stringify(value);
-        if (json !== lastJson) {
-          lastJson = json;
+        if (!deepEqual(value, last)) {
+          last = value;
           observer.next(value as V);
         }
       });
@@ -74,13 +74,12 @@ export function observeDiff(
 ): Subscribable<{ base: unknown; current: unknown } | null> {
   return {
     subscribe(observer) {
-      let lastJson = JSON.stringify(engine.getDiff(path));
-      observer.next(engine.getDiff(path));
+      let last: unknown = engine.getDiff(path);
+      observer.next(last as { base: unknown; current: unknown } | null);
       const unsub = engine.onChange(() => {
         const diff = engine.getDiff(path);
-        const json = JSON.stringify(diff);
-        if (json !== lastJson) {
-          lastJson = json;
+        if (!deepEqual(diff, last)) {
+          last = diff;
           observer.next(diff);
         }
       });
@@ -96,13 +95,12 @@ export function observeDiff(
 export function observeExport<T = unknown>(engine: Engine<T>): Subscribable<T> {
   return {
     subscribe(observer) {
-      let lastJson = JSON.stringify(engine.export());
-      observer.next(engine.export());
+      let last: unknown = engine.export();
+      observer.next(last as T);
       const unsub = engine.onChange(() => {
         const doc = engine.export();
-        const json = JSON.stringify(doc);
-        if (json !== lastJson) {
-          lastJson = json;
+        if (!deepEqual(doc, last)) {
+          last = doc;
           observer.next(doc);
         }
       });

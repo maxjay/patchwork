@@ -1,6 +1,7 @@
 import { useSyncExternalStore, useRef, useMemo } from 'react';
 import { Engine } from '../engine.js';
-import type { EngineOptions } from '../types.js';
+import type { EngineOptions, NodeInfo } from '../types.js';
+import { deepEqual } from '../util.js';
 
 /**
  * Create an Engine and subscribe to its changes.
@@ -49,6 +50,23 @@ export function useDiff(
 }
 
 /**
+ * Read the node metadata at a path, reactively.
+ *
+ * For containers (object/array): re-renders when keys are added/removed.
+ * For leaves: re-renders when the value changes.
+ * Returns `null` if the path doesn't exist.
+ *
+ * ```tsx
+ * const node = useNode(engine, '/server');
+ * if (node?.keys) { /* render children *\/ }
+ * ```
+ */
+export function useNode(engine: Engine, path: string): NodeInfo | null {
+  const sel = useMemo(() => makeSelector(engine, () => engine.node(path)), [engine, path]);
+  return useSyncExternalStore(sel.subscribe, sel.snap);
+}
+
+/**
  * Read the full exported document, reactively. Only re-renders when the
  * document actually changes.
  */
@@ -62,17 +80,14 @@ export function useExport<T = unknown>(engine: Engine<T>): T {
 function makeSelector<V>(engine: Engine<any>, compute: () => V) {
   let ver = -1;
   let value: V;
-  let json = '';
 
   return {
     subscribe: (cb: () => void) => engine.onChange(cb),
     snap: (): V => {
       if (engine.version === ver) return value;
       const next = compute();
-      const nextJson = JSON.stringify(next);
       ver = engine.version;
-      if (nextJson !== json) {
-        json = nextJson;
+      if (!deepEqual(next, value)) {
         value = next;
       }
       return value;

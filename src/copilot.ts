@@ -1,7 +1,8 @@
 import type { Op, OpInput, Action, DiffEntry, DiffTreeNode } from './types.js';
 import { SessionClosedError, NoOpAtPathError } from './errors.js';
-import { parsePath, pathsOverlap, unkeyify } from './pointer.js';
+import { parsePath, pathsOverlap } from './pointer.js';
 import type { Engine } from './engine.js';
+import { deepCopy } from './util.js';
 
 /**
  * A thin review interface for copilot-proposed changes.
@@ -69,16 +70,14 @@ export class CopilotSession {
   // ─── Diff ──────────────────────────────────────────────────────────────────
 
   diff(): DiffEntry[] {
-    const state = this._engine._stateWithUserOps();
     const entries: DiffEntry[] = [];
 
     for (const op of this._ops.values()) {
       const { insertAt: _, ...rest } = op;
       const entry: DiffEntry = {
         ...rest,
-        path: this._engine._toExternalPath(op.path, state),
-        value: op.value !== undefined ? unkeyify(op.value) : undefined,
-        prev: op.prev !== undefined ? unkeyify(op.prev) : undefined,
+        value: op.value !== undefined ? deepCopy(op.value) : undefined,
+        prev: op.prev !== undefined ? deepCopy(op.prev) : undefined,
       };
 
       for (const userOp of this._engine._activeOps()) {
@@ -100,22 +99,20 @@ export class CopilotSession {
 
   approve(path: string): void {
     this._assertOpen();
-    const internalPath = this._resolveForLookup(path);
-    const op = this._ops.get(internalPath);
+    const op = this._ops.get(path);
     if (!op) throw new NoOpAtPathError(path);
 
-    this._ops.delete(internalPath);
+    this._ops.delete(path);
     this._engine._acceptOp(op);
     this._engine._bump();
   }
 
   decline(path: string): void {
     this._assertOpen();
-    const internalPath = this._resolveForLookup(path);
-    const op = this._ops.get(internalPath);
+    const op = this._ops.get(path);
     if (!op) throw new NoOpAtPathError(path);
 
-    this._ops.delete(internalPath);
+    this._ops.delete(path);
     this._engine._bump();
   }
 
@@ -148,16 +145,6 @@ export class CopilotSession {
   private _close(): void {
     this._closed = true;
     this._engine._closeCopilot();
-  }
-
-  /** Resolve a caller path for approve/decline lookup. */
-  private _resolveForLookup(path: string): string {
-    try {
-      const { internalPath } = this._engine._resolve(path, 'replace');
-      return internalPath;
-    } catch {
-      return path;
-    }
   }
 }
 

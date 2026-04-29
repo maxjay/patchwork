@@ -1,24 +1,3 @@
-/** A keyed array element — stable identity for array items. */
-export type KeyedElement = { key: string; value: unknown };
-
-/** Symbol tag used to mark arrays as keyed (including empty ones). */
-export const KEYED = Symbol.for('onionskin.keyed');
-
-/** A keyed array is a regular array of KeyedElement, tagged with KEYED. */
-export type KeyedArray = KeyedElement[] & { [KEYED]: true };
-
-/** Create a keyed array (tagged). */
-export function toKeyed(arr: KeyedElement[]): KeyedArray {
-  const a = arr as KeyedArray;
-  a[KEYED] = true;
-  return a;
-}
-
-/** Type guard for keyed arrays. */
-export function isKeyedArray(v: unknown): v is KeyedArray {
-  return Array.isArray(v) && (v as any)[KEYED] === true;
-}
-
 /** What the caller provides to propose(). */
 export type OpInput = {
   path: string;
@@ -43,7 +22,7 @@ export type DiffEntry = Op & { conflictsWithUser?: boolean };
 
 /** One reversible unit of work on the undo/redo stack. */
 export type Action = {
-  kind: 'propose' | 'revert' | 'approve' | 'apply';
+  kind: 'propose' | 'revert' | 'approve' | 'apply' | 'reset';
   ops: Op[];
   /** For revert/undo: the ops that were removed, for restoring on undo. */
   undone?: Op[];
@@ -54,6 +33,20 @@ export type DiffTreeNode = {
   segment?: string;
   op?: Op | DiffEntry;
   children: Map<string, DiffTreeNode>;
+};
+
+/** Metadata about a node at a path in the document. */
+export type NodeInfo = {
+  path: string;
+  key: string;
+  type: 'object' | 'array' | 'string' | 'number' | 'boolean' | 'null';
+  changed: boolean;
+  /** Present for object/array — child keys (no subtree values fetched). */
+  keys?: string[];
+  /** Present for leaves — current effective value. */
+  value?: unknown;
+  /** Present for leaves — base value (undefined if field was added). */
+  base?: unknown;
 };
 
 export type EngineOptions<T> = {

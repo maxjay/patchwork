@@ -1,10 +1,41 @@
-# onionskin
+<p align="center">
+  <h1 align="center">onionskin</h1>
+  <p align="center">The editing engine for human-AI collaboration on structured data.</p>
+</p>
 
-Copilot-native editing engine for JSON. Every edit is tracked, reviewable, and undoable. An AI copilot and a human can edit the same document through the same primitives — the human is always in control.
+<p align="center">
+  <a href="#install">Install</a> &middot;
+  <a href="#why">Why</a> &middot;
+  <a href="#how-it-works">How it works</a> &middot;
+  <a href="#ai-integration">AI integration</a> &middot;
+  <a href="#framework-bindings">Frameworks</a> &middot;
+  <a href="#api">API</a>
+</p>
+
+---
+
+<!-- TODO: Record a demo GIF showing: user edits config, asks AI to "make this production-ready",
+     AI proposals appear, user approves some / declines others, undoes an approved change.
+     Place it here: ![onionskin demo](demo.gif) -->
+
+## Why
+
+You're building an app where users edit structured data — config files, form builders, workflow definitions, business rules. You want to add AI assistance. Now you need to build:
+
+- Change tracking with full undo/redo
+- A proposal layer so the AI can't just overwrite the user's work
+- Per-field approve/decline so the user stays in control
+- Conflict detection when both human and AI touch the same field
+- The glue between your AI and your editor
+
+**That's onionskin.** One primitive that handles all of it.
 
 ```
-base document  +  user ops  +  copilot ops  =  current state
+base document  +  user edits  +  copilot proposals  =  current state
+                  (always applied)  (held for review)
 ```
+
+No other library does this. State managers (Redux, Zustand) don't have proposal layers. JSON editors (jsoneditor) are UI components, not engines. CRDTs (Yjs, Automerge) solve multi-user sync, not human-AI review. Onionskin is purpose-built for the moment an AI says *"here's what I'd change"* and a human says *"let me look at that first."*
 
 ## Install
 
@@ -12,155 +43,161 @@ base document  +  user ops  +  copilot ops  =  current state
 npm install onionskin
 ```
 
-## 30-second overview
+## How it works
+
+### 1. Wrap any JSON object
 
 ```ts
 import { Engine } from 'onionskin';
 
-const engine = new Engine({ host: 'localhost', port: 8080, debug: false });
-
-// edit
-engine.propose({ kind: 'replace', path: '/port', value: 443 });
-engine.propose({ kind: 'add', path: '/ssl', value: true });
-
-// read
-engine.get('/port');    // 443
-engine.diff();          // [{ path: '/port', kind: 'replace', prev: 8080, value: 443, ... }, ...]
-engine.export();        // { host: 'localhost', port: 443, debug: false, ssl: true }
-
-// undo / redo
-engine.undo();
-engine.redo();
-
-// move / rename
-engine.move('/host', '/hostname');
-
-// save — folds ops into base, undo still works
-engine.apply();
+const engine = new Engine({
+  appName: 'my-service',
+  server: { host: 'localhost', port: 8080 },
+  debug: false,
+});
 ```
 
-## Copilot
+The engine never mutates your original. Every edit is an op on top.
 
-The copilot edits through a proposal layer. Its changes are held for review — the user approves or declines each one.
+### 2. Users edit normally
+
+```ts
+engine.propose({ kind: 'replace', path: '/server/port', value: 443 });
+engine.propose({ kind: 'add', path: '/server/ssl', value: true });
+engine.propose({ kind: 'remove', path: '/debug' });
+
+engine.export();
+// { appName: 'my-service', server: { host: 'localhost', port: 443, ssl: true } }
+
+engine.undo();   // ssl removed
+engine.undo();   // port back to 8080
+engine.redo();   // port back to 443
+```
+
+Every action — propose, revert, move, apply — is undoable. Just like a real editor.
+
+### 3. AI proposes, human reviews
+
+This is the part nothing else gives you.
 
 ```ts
 const copilot = engine.startCopilot();
 
-copilot.propose({ kind: 'replace', path: '/port', value: 443 });
-copilot.propose({ kind: 'add', path: '/ssl', value: true });
-copilot.propose({ kind: 'remove', path: '/debug' });
+// AI proposes changes — they're held, not applied
+copilot.propose({ kind: 'replace', path: '/server/host', value: '0.0.0.0' });
+copilot.propose({ kind: 'replace', path: '/server/port', value: 443 });
+copilot.propose({ kind: 'add', path: '/server/ssl', value: true });
+copilot.propose({ kind: 'add', path: '/logLevel', value: 'warn' });
 
-// review
+// each proposal shows what it would change
 copilot.diff();
 // [
-//   { path: '/port', value: 443, prev: 8080, conflictsWithUser: false },
-//   { path: '/ssl', value: true, conflictsWithUser: false },
-//   { path: '/debug', prev: false, conflictsWithUser: false },
+//   { path: '/server/host', kind: 'replace', prev: 'localhost', value: '0.0.0.0' },
+//   { path: '/server/port', kind: 'replace', prev: 8080, value: 443 },
+//   { path: '/server/ssl', kind: 'add', value: true },
+//   { path: '/logLevel', kind: 'add', value: 'warn' },
 // ]
 
-// approve some, decline others
-copilot.approve('/port');
-copilot.approve('/ssl');
-copilot.decline('/debug');   // user wants to keep debug
+// user reviews each one
+copilot.approve('/server/port');    // yes, use 443
+copilot.approve('/server/ssl');     // yes, add ssl
+copilot.decline('/server/host');    // no, keep localhost
+copilot.decline('/logLevel');       // no, don't need that
 
 copilot.end();
 ```
 
-When the user edits a path the copilot also touched, the engine resolves it automatically — user always wins:
+Approved changes land in the user's undo stack — `engine.undo()` rolls back an approved copilot change just like any other edit.
 
-| Overlap | What happens |
-|---|---|
-| Same path | Copilot op auto-accepted, user edit layers on top |
-| User edits child of copilot path | Copilot op auto-accepted (user is building on it) |
-| User edits parent of copilot path | Copilot op auto-declined (user replaced the subtree) |
-| No overlap | Both coexist |
+### 4. Simultaneous editing just works
 
-## Framework bindings
-
-Reactive, per-path subscriptions. A component reading `/port` won't re-render when `/host` changes.
-
-### React
-
-```tsx
-import { useEngine, useValue, useDiff, useExport } from 'onionskin/react';
-
-function App() {
-  const engine = useEngine({ host: 'localhost', port: 8080 });
-
-  const port = useValue<number>(engine, '/port');       // only re-renders when port changes
-  const diff = useDiff(engine, '/port');                 // { base, current } | null
-  const config = useExport(engine);                      // full document
-}
-```
-
-### Vue
+The user doesn't have to stop editing while the AI is proposing. When their edits overlap, onionskin resolves it:
 
 ```ts
-import { useEngine, useValue, useDiff, useExport } from 'onionskin/vue';
+const copilot = engine.startCopilot();
 
-const { engine } = useEngine({ host: 'localhost', port: 8080 });
+// AI proposes a new server block
+copilot.propose({ kind: 'add', path: '/server/timeout', value: 30 });
 
-const port = useValue<number>(engine, '/port');          // ComputedRef<number>
-const diff = useDiff(engine, '/port');                    // ComputedRef<{ base, current } | null>
-const config = useExport(engine);                         // ComputedRef<T>
+// user edits the same area — no crash, no conflict dialog
+engine.propose({ kind: 'replace', path: '/server/port', value: 9090 });
+
+// both edits coexist — AI's timeout proposal is still pending,
+// user's port change is applied
+engine.export();
+// { ..., server: { host: 'localhost', port: 9090, timeout: 30 } }
 ```
 
-### Svelte
-
-```svelte
-<script>
-  import { createEngine, valueStore, exportStore } from 'onionskin/svelte';
-
-  const { engine } = createEngine({ host: 'localhost', port: 8080 });
-
-  const port = valueStore<number>(engine, '/port');      // Readable<number>
-  const config = exportStore(engine);                     // Readable<T>
-</script>
-
-<input value={$port} />
-```
-
-### Angular
+When edits collide on the *same path*, the user always wins:
 
 ```ts
-import { observeValue, observeExport } from 'onionskin/angular';
+// AI proposed changing the host
+copilot.propose({ kind: 'replace', path: '/server/host', value: '0.0.0.0' });
 
-// works with async pipe, toSignal(), or RxJS from()
-readonly port = toSignal(observeValue<number>(engine, '/port'));
-readonly config = toSignal(observeExport(engine));
+// user also changes the host — AI proposal auto-accepted, user edit layers on top
+engine.propose({ kind: 'replace', path: '/server/host', value: '192.168.1.1' });
+
+// undo goes: user's value -> AI's value -> original
+engine.undo();  // back to '0.0.0.0' (AI's proposal)
+engine.undo();  // back to 'localhost' (original)
 ```
 
-No `@angular/core` dependency — just a `Subscribable` interface.
+### 5. Diff everything
+
+```ts
+// what changed from base?
+engine.getDiff('/server/port');  // { base: 8080, current: 443 }
+engine.getDiff('/appName');      // null (unchanged)
+
+// all pending changes as a flat list
+engine.diff();
+
+// or as a tree — for rendering a grouped review UI
+engine.diffTree();
+// { children: { server: { children: { port: { op: ... }, ssl: { op: ... } } } } }
+```
+
+### 6. Apply when ready
+
+`apply()` folds all edits into the base. Diff resets. Undo still works — like pressing save.
+
+```ts
+engine.apply();
+engine.diff();    // [] — clean
+engine.undo();    // undo the apply itself
+```
 
 ## AI integration
 
-Two layers: **tool definitions** for any LLM API, and a **real MCP server** for native integration.
+Two layers: **tool definitions** you can plug into any LLM, and a **real MCP server** for native integration with Claude Desktop, Cursor, etc.
 
-### Tool definitions
+### Tool definitions (`onionskin/tools`)
 
-Framework-neutral tool definitions you can plug into any LLM tool-calling system — Anthropic API, OpenAI API, Vercel AI SDK, or a local model.
+Framework-neutral. Works with Anthropic API, OpenAI API, Vercel AI SDK, local models — anything that supports tool calling.
 
 ```ts
 import { createEditTools } from 'onionskin/tools';
 
 const tools = createEditTools(engine);
-// 11 tools: start_session, propose, move, get_value, get_diff,
-//           approve, decline, approve_all, decline_all, end_session, export
+// 11 tools: start_session, end_session, propose, move, get_value,
+//           get_diff, approve, decline, approve_all, decline_all, export
 
-// wire into any tool-calling API
+// plug into any tool-calling system
 for (const tool of tools) {
-  registerTool({
+  server.addTool({
     name: tool.name,
     description: tool.description,
-    schema: tool.inputSchema,
+    inputSchema: tool.inputSchema,
     handler: (input) => tool.handler(input),
   });
 }
 ```
 
-### MCP server
+The AI gets tool descriptions that explain the propose-then-review workflow. It calls `start_session`, reads the doc with `get_value`, proposes changes, and the user reviews in your UI.
 
-A proper MCP server — JSON-RPC over stdio, tools + resources. Connectable from Claude Desktop, Cursor, Claude Code, or any MCP client.
+### MCP server (`onionskin/mcp`)
+
+A real MCP server — JSON-RPC over stdio, connectable from Claude Desktop, Cursor, Claude Code, or any MCP client.
 
 ```ts
 import { Engine } from 'onionskin';
@@ -168,13 +205,91 @@ import { createMcpServer } from 'onionskin/mcp';
 
 const engine = new Engine(loadConfig());
 const { server, connect } = createMcpServer(engine);
-
-await connect(); // stdio transport
+await connect(); // stdio
 ```
 
-Exposes:
-- **11 tools** — the full editing toolkit
-- **2 resources** — `config://document` (current state), `config://base` (original)
+Exposes all 11 tools plus two resources:
+- `config://document` — current state (the AI can read the full doc without a tool call)
+- `config://base` — original state before edits
+
+## Framework bindings
+
+Reactive, per-path subscriptions out of the box. A component reading `/server/port` won't re-render when `/server/host` changes.
+
+<table>
+<tr><td><b>React</b></td><td><b>Vue</b></td></tr>
+<tr>
+<td>
+
+```tsx
+import { useEngine, useValue }
+  from 'onionskin/react';
+
+function PortInput() {
+  const engine = useEngine(config);
+  const port = useValue<number>(
+    engine, '/server/port'
+  );
+
+  return <input value={port} />;
+}
+```
+
+</td>
+<td>
+
+```ts
+import { useEngine, useValue }
+  from 'onionskin/vue';
+
+const { engine } = useEngine(config);
+const port = useValue<number>(
+  engine, '/server/port'
+);
+
+// port.value is reactive
+```
+
+</td>
+</tr>
+<tr><td><b>Svelte</b></td><td><b>Angular</b></td></tr>
+<tr>
+<td>
+
+```svelte
+<script>
+import { createEngine, valueStore }
+  from 'onionskin/svelte';
+
+const { engine } = createEngine(config);
+const port = valueStore(
+  engine, '/server/port'
+);
+</script>
+
+<input value={$port} />
+```
+
+</td>
+<td>
+
+```ts
+import { observeValue }
+  from 'onionskin/angular';
+
+// works with async pipe, toSignal()
+readonly port = toSignal(
+  observeValue(engine, '/server/port')
+);
+```
+
+No `@angular/core` dep — just `Subscribable`.
+
+</td>
+</tr>
+</table>
+
+Each binding also exports `useDiff` / `diffStore` / `observeDiff` for per-path diff tracking, and `useExport` / `exportStore` / `observeExport` for the full document.
 
 ## API
 
@@ -182,51 +297,51 @@ Exposes:
 
 | Method | Description |
 |---|---|
-| `new Engine(base)` | Create engine wrapping any JSON object |
-| `.get(path)` | Read value at path (all layers) |
-| `.getBase(path)` | Read value from base only (pre-edits) |
-| `.getDiff(path)` | `{ base, current }` if changed, `null` if not |
-| `.export()` | Full current state as deep copy |
-| `.propose(op)` | Add / remove / replace at a path |
-| `.move(from, to)` | Move or rename a field (one undo step) |
-| `.revert(path)` | Remove the op at a path (cascades to children) |
+| `new Engine(base)` | Wrap any JSON object |
+| `.get(path)` | Read value (all layers) |
+| `.getBase(path)` | Read from base only |
+| `.getDiff(path)` | `{ base, current }` or `null` |
+| `.export()` | Full state as deep copy |
+| `.propose(op)` | `add` / `remove` / `replace` |
+| `.move(from, to)` | Rename or relocate (one undo step) |
+| `.revert(path)` | Remove op at path + descendants |
 | `.undo()` | Undo last action |
-| `.redo()` | Redo last undone action |
-| `.diff()` | All pending ops |
-| `.diffTree()` | Ops as a nested tree (for grouped UI) |
-| `.apply()` | Fold ops into base (undo survives) |
-| `.onChange(fn)` | Subscribe to changes, returns unsubscribe |
-| `.startCopilot()` | Open a copilot review session |
-| `.version` | Monotonic counter, increments on every change |
+| `.redo()` | Redo |
+| `.diff()` | Pending ops (flat) |
+| `.diffTree()` | Pending ops (tree) |
+| `.apply()` | Fold ops into base |
+| `.onChange(fn)` | Subscribe; returns unsubscribe fn |
+| `.startCopilot()` | Open copilot session |
+| `.version` | Monotonic change counter |
 
 ### `CopilotSession`
 
 | Method | Description |
 |---|---|
-| `.propose(op)` | Propose a change for review |
-| `.move(from, to)` | Propose a move/rename |
-| `.diff()` | Pending proposals with `conflictsWithUser` flags |
-| `.approve(path)` | Accept one proposal |
-| `.decline(path)` | Drop one proposal |
-| `.approveAll()` | Accept all, end session |
-| `.declineAll()` | Drop all, end session |
-| `.end()` | Close session (pending ops dropped) |
+| `.propose(op)` | Propose for review |
+| `.move(from, to)` | Propose a move |
+| `.diff()` | Proposals with `conflictsWithUser` flags |
+| `.approve(path)` | Accept one |
+| `.decline(path)` | Drop one |
+| `.approveAll()` | Accept all + end |
+| `.declineAll()` | Drop all + end |
+| `.end()` | Close (pending ops dropped) |
 
 ### Paths
 
-[JSON Pointers (RFC 6901)](https://datatracker.ietf.org/doc/html/rfc6901) — `/name`, `/server/port`, `/items/0`, `/-` (append to array).
+[JSON Pointers (RFC 6901)](https://datatracker.ietf.org/doc/html/rfc6901) — `/server/port`, `/items/0`, `/-` (append).
 
 ### Entrypoints
 
-| Import | What |
-|---|---|
-| `onionskin` | Engine, CopilotSession, types, errors |
-| `onionskin/tools` | Tool definitions for any LLM API |
-| `onionskin/mcp` | MCP server (JSON-RPC, stdio) |
-| `onionskin/react` | `useEngine`, `useValue`, `useDiff`, `useExport` |
-| `onionskin/vue` | `useEngine`, `useValue`, `useDiff`, `useExport` |
-| `onionskin/svelte` | `createEngine`, `valueStore`, `diffStore`, `exportStore` |
-| `onionskin/angular` | `observeValue`, `observeDiff`, `observeExport` |
+```
+onionskin            Engine, CopilotSession, types, errors
+onionskin/tools      Tool definitions for any LLM API
+onionskin/mcp        MCP server (JSON-RPC, stdio)
+onionskin/react      useEngine, useValue, useDiff, useExport
+onionskin/vue        useEngine, useValue, useDiff, useExport
+onionskin/svelte     createEngine, valueStore, diffStore, exportStore
+onionskin/angular    observeValue, observeDiff, observeExport
+```
 
 ## Docs
 
@@ -236,4 +351,4 @@ Exposes:
 
 ## License
 
-ISC
+Apache-2.0

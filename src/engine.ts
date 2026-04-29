@@ -1,5 +1,4 @@
-import type { Op, OpInput, Action, DiffEntry, DiffTreeNode, EngineOptions } from './types.js';
-import { isKeyedArray } from './types.js';
+import type { Op, OpInput, Action, DiffEntry, DiffTreeNode, NodeInfo, EngineOptions } from './types.js';
 import {
   CopilotAlreadyOpenError,
   CopilotSessionOpenError,
@@ -14,15 +13,9 @@ import {
   removeBySegments,
   isAncestor,
   isDescendant,
-  pathsOverlap,
-  keyify,
-  containsArray,
-  unkeyify,
-  resolveToInternal,
-  resolveToExternal,
 } from './pointer.js';
 import { CopilotSession } from './copilot.js';
-import { deepCopy } from './util.js';
+import { deepCopy, deepEqual } from './util.js';
 
 export class Engine<T = unknown> {
   private _base: unknown;
@@ -32,8 +25,6 @@ export class Engine<T = unknown> {
   private _version = 0;
   private _opts: EngineOptions<T>;
   private _listeners: Set<() => void> = new Set();
-  /** @internal */
-  _nextKey: number;
 
   /** @internal */
   _copilotSession: CopilotSession | null = null;
@@ -41,9 +32,7 @@ export class Engine<T = unknown> {
   _copilotOps: Map<string, Op> | null = null;
 
   constructor(base: T, opts?: EngineOptions<T>) {
-    const result = keyify(deepCopy(base), 0);
-    this._base = result.value;
-    this._nextKey = result.counter;
+    this._base = deepCopy(base);
     this._opts = opts ?? {};
   }
 
@@ -65,53 +54,62 @@ export class Engine<T = unknown> {
   // ─── Read ──────────────────────────────────────────────────────────────────
 
   get(path: string): unknown {
-    const state = this._currentState();
     const segments = parsePath(path);
-
-    // Walk the state by index — arrays use positional access
-    let current = state;
-    for (const seg of segments) {
-      if (current === null || current === undefined) return undefined;
-      if (isKeyedArray(current)) {
-        const idx = Number(seg);
-        if (seg === '-' || !Number.isInteger(idx) || idx < 0 || idx >= current.length) return undefined;
-        current = current[idx].value;
-      } else if (typeof current === 'object') {
-        current = (current as Record<string, unknown>)[seg];
-      } else {
-        return undefined;
-      }
-    }
-    return unkeyify(current);
+    return deepCopy(getBySegments(this._currentState(), segments));
   }
 
   getBase(path: string): unknown {
     const segments = parsePath(path);
-    let current = this._base;
-    for (const seg of segments) {
-      if (current === null || current === undefined) return undefined;
-      if (isKeyedArray(current)) {
-        const idx = Number(seg);
-        if (seg === '-' || !Number.isInteger(idx) || idx < 0 || idx >= current.length) return undefined;
-        current = current[idx].value;
-      } else if (typeof current === 'object') {
-        current = (current as Record<string, unknown>)[seg];
-      } else {
-        return undefined;
-      }
-    }
-    return unkeyify(current);
+    return deepCopy(getBySegments(this._base, segments));
   }
 
   getDiff(path: string): { base: unknown; current: unknown } | null {
     const base = this.getBase(path);
     const current = this.get(path);
-    if (base === current) return null;
+    if (deepEqual(base, current)) return null;
     return { base, current };
   }
 
+  node(path: string): NodeInfo | null {
+    const segments = parsePath(path);
+    const state = this._currentState();
+    const value = getBySegments(state, segments);
+
+    if (value === undefined) return null;
+
+    const key = segments.length > 0 ? segments[segments.length - 1] : '';
+    const baseValue = getBySegments(this._base, segments);
+
+    if (value === null) {
+      return { type: 'null', path, key, value: null, base: deepCopy(baseValue), changed: !deepEqual(null, baseValue) };
+    }
+
+    if (Array.isArray(value)) {
+      const keys = value.map((_, i) => String(i));
+      const baseKeys = Array.isArray(baseValue) ? baseValue.map((_, i) => String(i)) : null;
+      return { type: 'array', path, key, keys, changed: !deepEqual(keys, baseKeys) };
+    }
+
+    if (typeof value === 'object') {
+      const keys = Object.keys(value as Record<string, unknown>);
+      const baseKeys = (baseValue !== null && typeof baseValue === 'object' && !Array.isArray(baseValue))
+        ? Object.keys(baseValue as Record<string, unknown>)
+        : null;
+      return { type: 'object', path, key, keys, changed: !deepEqual(keys, baseKeys) };
+    }
+
+    return {
+      type: typeof value as 'string' | 'number' | 'boolean',
+      path,
+      key,
+      value: deepCopy(value),
+      base: deepCopy(baseValue),
+      changed: !deepEqual(value, baseValue),
+    };
+  }
+
   export(): T {
-    return unkeyify(this._currentState()) as T;
+    return deepCopy(this._currentState()) as T;
   }
 
   // ─── Propose / Edit ────────────────────────────────────────────────────────
@@ -121,8 +119,7 @@ export class Engine<T = unknown> {
 
     for (const inp of inputs) {
       if (this._copilotOps) {
-        const { internalPath } = this._resolve(inp.path, inp.kind);
-        this._autoResolveCopilotOps(internalPath);
+        this._autoResolveCopilotOps(inp.path);
       }
       this._proposeOn(this._ops, this._undoStack, this._redoStack, inp, 'user');
     }
@@ -140,6 +137,77 @@ export class Engine<T = unknown> {
     this._revertOn(this._ops, this._undoStack, this._redoStack, path);
   }
 
+  // ─── Reset ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Reset a path back to its base value, regardless of op structure.
+   *
+   * Unlike `revert` (which removes the op at a path), `reset` guarantees
+   * `get(path) === getBase(path)` after the call — even when the current value
+   * comes from an ancestor op rather than an op at the path itself.
+   *
+   * The entire reset is one undo step.
+   */
+  reset(path: string): void {
+    const baseVal = this.getBase(path);
+    const currentVal = this.get(path);
+    if (deepEqual(baseVal, currentVal)) return;
+
+    parsePath(path); // validate
+
+    // Step 1: Remove all user ops at path + descendants
+    const removedOps: Op[] = [];
+    for (const [opPath, op] of this._ops) {
+      if (opPath === path || isDescendant(opPath, path)) {
+        removedOps.push(op);
+      }
+    }
+    for (const op of removedOps) {
+      this._ops.delete(op.path);
+    }
+
+    // Step 2: Check if value now matches base (it might not if an ancestor op affects it)
+    const stateAfterRemoval = this._stateWithUserOps();
+    const valueAfterRemoval = getBySegments(stateAfterRemoval, parsePath(path));
+    const baseValueInternal = getBySegments(this._base, parsePath(path));
+    const compensatingOps: Op[] = [];
+
+    if (!deepEqual(valueAfterRemoval, baseValueInternal)) {
+      if (baseValueInternal === undefined) {
+        // Base doesn't have this path — remove it
+        const op: Op = {
+          path,
+          kind: 'remove',
+          prev: valueAfterRemoval,
+          actor: 'user',
+          ts: Date.now(),
+        };
+        this._ops.set(path, op);
+        compensatingOps.push(op);
+      } else {
+        // Base has this path — replace to match base value
+        const op: Op = {
+          path,
+          kind: 'replace',
+          value: deepCopy(baseValueInternal),
+          prev: valueAfterRemoval,
+          actor: 'user',
+          ts: Date.now(),
+        };
+        this._ops.set(path, op);
+        compensatingOps.push(op);
+      }
+    }
+
+    this._undoStack.push({
+      kind: 'reset',
+      ops: compensatingOps,
+      undone: removedOps.length > 0 ? removedOps : undefined,
+    });
+    this._redoStack = [];
+    this._bump();
+  }
+
   // ─── Undo / Redo ──────────────────────────────────────────────────────────
 
   undo(): void {
@@ -153,14 +221,12 @@ export class Engine<T = unknown> {
   // ─── Diff ──────────────────────────────────────────────────────────────────
 
   diff(): Op[] {
-    const state = this._stateWithUserOps();
     return [...this._ops.values()].map((op) => {
       const { insertAt: _, ...rest } = op;
       return {
         ...rest,
-        path: this._toExternalPath(op.path, state),
-        value: op.value !== undefined ? unkeyify(op.value) : undefined,
-        prev: op.prev !== undefined ? unkeyify(op.prev) : undefined,
+        value: op.value !== undefined ? deepCopy(op.value) : undefined,
+        prev: op.prev !== undefined ? deepCopy(op.prev) : undefined,
       };
     });
   }
@@ -224,33 +290,25 @@ export class Engine<T = unknown> {
     input: OpInput,
     actor: 'user' | 'copilot',
   ): void {
-    const { internalPath, insertAt } = this._resolve(input.path, input.kind);
+    parsePath(input.path); // validate
+    const { path, insertAt } = this._resolvePath(input.path, input.kind);
 
-    const prev = this._valueAt(internalPath);
+    const prev = this._valueAt(path);
 
     // Removing a path that doesn't exist is a no-op, not an error.
-    // Silenced for idempotency — callers shouldn't need to check before removing.
-    // throw new PathNotFoundError(input.path);
     if (input.kind === 'remove' && prev === undefined) return;
 
-    let storedValue = input.kind === 'remove' ? undefined : input.value;
-    if (storedValue !== undefined && containsArray(storedValue)) {
-      const kv = keyify(storedValue, this._nextKey);
-      storedValue = kv.value;
-      this._nextKey = kv.counter;
-    }
-
     const op: Op = {
-      path: internalPath,
+      path,
       kind: input.kind,
-      value: storedValue,
+      value: input.kind === 'remove' ? undefined : deepCopy(input.value),
       prev,
       actor,
       ts: Date.now(),
       insertAt,
     };
 
-    ops.set(internalPath, op);
+    ops.set(path, op);
     undoStack.push({ kind: 'propose', ops: [op] });
     redoStack.length = 0;
     this._bump();
@@ -265,39 +323,41 @@ export class Engine<T = unknown> {
     to: string,
     actor: 'user' | 'copilot',
   ): void {
-    const { internalPath: fromPath } = this._resolve(from, 'remove');
-    const { internalPath: toPath, insertAt } = this._resolve(to, 'add');
+    parsePath(from); // validate
+    parsePath(to);
 
-    const prev = this._valueAt(fromPath);
+    const prev = this._valueAt(from);
     if (prev === undefined) throw new PathNotFoundError(from);
 
-    // Collect the effective value at the source (base + ops, keyed)
+    // Collect the effective value at the source (base + ops)
     const state = this._currentState();
-    const value = getBySegments(state, parsePath(fromPath));
+    const value = getBySegments(state, parsePath(from));
 
     // Remove descendant ops at source — their values are folded into the moved value
     const removedDescendants: Op[] = [];
     for (const [opPath, pendingOp] of ops) {
-      if (isDescendant(opPath, fromPath)) {
+      if (isDescendant(opPath, from)) {
         removedDescendants.push(pendingOp);
         ops.delete(opPath);
       }
     }
 
+    const { insertAt } = this._resolvePath(to, 'add');
+
     const removeOp: Op = {
-      path: fromPath, kind: 'remove', prev, actor, ts: Date.now(),
+      path: from, kind: 'remove', prev, actor, ts: Date.now(),
     };
     const addOp: Op = {
-      path: toPath, kind: 'add', value, actor, ts: Date.now(), insertAt,
+      path: to, kind: 'add', value, actor, ts: Date.now(), insertAt,
     };
 
     if (actor === 'user' && this._copilotOps) {
-      this._autoResolveCopilotOps(fromPath);
-      this._autoResolveCopilotOps(toPath);
+      this._autoResolveCopilotOps(from);
+      this._autoResolveCopilotOps(to);
     }
 
-    ops.set(fromPath, removeOp);
-    ops.set(toPath, addOp);
+    ops.set(from, removeOp);
+    ops.set(to, addOp);
     undoStack.push({ kind: 'propose', ops: [removeOp, addOp], undone: removedDescendants.length > 0 ? removedDescendants : undefined });
     redoStack.length = 0;
     this._bump();
@@ -310,14 +370,14 @@ export class Engine<T = unknown> {
     redoStack: Action[],
     path: string,
   ): void {
-    const { internalPath } = this._resolve(path, 'replace');
+    parsePath(path); // validate
 
-    const op = ops.get(internalPath);
+    const op = ops.get(path);
     if (!op) throw new NoOpAtPathError(path);
 
     const toRemove: Op[] = [];
     for (const [opPath, pendingOp] of ops) {
-      if (opPath === internalPath || isDescendant(opPath, internalPath)) {
+      if (opPath === path || isDescendant(opPath, path)) {
         toRemove.push(pendingOp);
       }
     }
@@ -339,7 +399,7 @@ export class Engine<T = unknown> {
     if (undoStack.length === 0) return;
     const action = undoStack.pop()!;
 
-    if (action.kind === 'propose' || action.kind === 'approve') {
+    if (action.kind === 'propose' || action.kind === 'approve' || action.kind === 'reset') {
       for (const op of action.ops) {
         ops.delete(op.path);
       }
@@ -347,7 +407,7 @@ export class Engine<T = unknown> {
         const earlier = this._findEarlierOpIn(undoStack, op.path);
         if (earlier) ops.set(op.path, earlier);
       }
-      // Restore descendant ops removed by move
+      // Restore ops removed by move or reset
       if (action.undone) {
         for (const op of action.undone) {
           ops.set(op.path, op);
@@ -361,13 +421,11 @@ export class Engine<T = unknown> {
       }
     } else if (action.kind === 'apply') {
       if (action.undone) {
-        // Reverse each op against the base to undo the apply
         let base = this._base;
         for (let i = action.undone.length - 1; i >= 0; i--) {
           base = reverseOp(base, action.undone[i]);
         }
         this._base = base;
-        // Restore the ops to the active set
         for (const op of action.undone) {
           ops.set(op.path, op);
         }
@@ -387,11 +445,11 @@ export class Engine<T = unknown> {
     if (redoStack.length === 0) return;
     const action = redoStack.pop()!;
 
-    if (action.kind === 'propose' || action.kind === 'approve') {
+    if (action.kind === 'propose' || action.kind === 'approve' || action.kind === 'reset') {
       for (const op of action.ops) {
         ops.set(op.path, op);
       }
-      // Re-remove descendant ops for move redo
+      // Re-remove ops for move/reset redo
       if (action.undone) {
         for (const op of action.undone) {
           ops.delete(op.path);
@@ -405,7 +463,6 @@ export class Engine<T = unknown> {
       }
     } else if (action.kind === 'apply') {
       if (action.undone) {
-        // Re-apply each op to the base and remove from active set
         let base = this._base;
         for (const op of action.undone) {
           base = applyOp(base, op);
@@ -431,11 +488,11 @@ export class Engine<T = unknown> {
     return [...this._ops.values()];
   }
 
-  /** @internal — value at an internal path (base + user ops, no copilot). */
-  _valueAt(internalPath: string): unknown {
-    const uop = this._ops.get(internalPath);
+  /** @internal — value at a path (base + user ops, no copilot). */
+  _valueAt(path: string): unknown {
+    const uop = this._ops.get(path);
     if (uop) return uop.kind === 'remove' ? undefined : uop.value;
-    return getBySegments(this._base, parsePath(internalPath));
+    return getBySegments(this._base, parsePath(path));
   }
 
   /** @internal — accept a copilot op into the user layer. */
@@ -446,28 +503,35 @@ export class Engine<T = unknown> {
   }
 
   /**
-   * @internal — resolve a caller's index-based path to the internal path.
-   * For paths that don't touch arrays, this is a no-op.
+   * @internal — resolve a path, handling array append (`-`).
+   * For non-array paths this is a no-op.
    */
-  _resolve(
+  _resolvePath(
     path: string,
     opKind: 'add' | 'remove' | 'replace',
-  ): { internalPath: string; insertAt?: number } {
-    parsePath(path); // validate
-    const segments = parsePath(path);
-    const state = this._currentState();
-    const result = resolveToInternal(segments, state, this._nextKey, opKind);
-    this._nextKey = result.counter;
-    return {
-      internalPath: buildPath(result.segments),
-      insertAt: result.insertAt,
-    };
-  }
+  ): { path: string; insertAt?: number } {
+    if (opKind !== 'add') return { path };
 
-  /** @internal — convert an internal path back to caller-facing index path. */
-  _toExternalPath(internalPath: string, state: unknown): string {
-    const segments = parsePath(internalPath);
-    return buildPath(resolveToExternal(segments, state));
+    const segments = parsePath(path);
+    if (segments.length === 0) return { path };
+
+    const last = segments[segments.length - 1];
+    const parentSegments = segments.slice(0, -1);
+    const state = this._currentState();
+    const parent = getBySegments(state, parentSegments);
+
+    if (Array.isArray(parent)) {
+      if (last === '-') {
+        const resolved = [...parentSegments, String(parent.length)];
+        return { path: buildPath(resolved), insertAt: parent.length };
+      }
+      const idx = Number(last);
+      if (Number.isInteger(idx)) {
+        return { path, insertAt: idx };
+      }
+    }
+
+    return { path };
   }
 
   /** @internal — current state: base + all ops applied. */
@@ -484,7 +548,7 @@ export class Engine<T = unknown> {
     return state;
   }
 
-  /** @internal — base + user ops only (no copilot). For diff translation. */
+  /** @internal — base + user ops only (no copilot). */
   _stateWithUserOps(): unknown {
     let state = this._base;
     for (const op of this._ops.values()) {
@@ -501,8 +565,6 @@ export class Engine<T = unknown> {
 
     for (const [copPath] of this._copilotOps) {
       if (copPath === userPath) {
-        // User is editing the same path copilot proposed on — accept the copilot
-        // op first so the user's edit layers on top with correct prev.
         toAccept.push(copPath);
       } else if (isDescendant(userPath, copPath)) {
         toAccept.push(copPath);
@@ -526,7 +588,7 @@ export class Engine<T = unknown> {
   private _findEarlierOpIn(undoStack: Action[], path: string): Op | undefined {
     for (let i = undoStack.length - 1; i >= 0; i--) {
       const action = undoStack[i];
-      if (action.kind === 'propose' || action.kind === 'approve') {
+      if (action.kind === 'propose' || action.kind === 'approve' || action.kind === 'reset') {
         for (const op of action.ops) {
           if (op.path === path) return op;
         }
