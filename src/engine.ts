@@ -1,10 +1,12 @@
-import type { Op, OpInput, Action, DiffEntry, DiffTreeNode, NodeInfo, EngineOptions } from './types.js';
+import type { Op, OpInput, Action, DiffEntry, DiffTreeNode, NodeInfo } from './types.js';
 import {
   CopilotAlreadyOpenError,
   CopilotSessionOpenError,
   NoOpAtPathError,
   PathNotFoundError,
+  ValidationError,
 } from './errors.js';
+import Ajv, { type ValidateFunction } from 'ajv';
 import {
   parsePath,
   buildPath,
@@ -23,7 +25,7 @@ export class Engine<T = unknown> {
   private _undoStack: Action[] = [];
   private _redoStack: Action[] = [];
   private _version = 0;
-  private _opts: EngineOptions<T>;
+  private _validator: ValidateFunction | null = null;
   private _listeners: Set<() => void> = new Set();
 
   /** @internal */
@@ -31,9 +33,24 @@ export class Engine<T = unknown> {
   /** @internal — copilot ops, owned by engine, shared with session */
   _copilotOps: Map<string, Op> | null = null;
 
-  constructor(base: T, opts?: EngineOptions<T>) {
+  constructor(base: T, schema?: object) {
     this._base = deepCopy(base);
-    this._opts = opts ?? {};
+    if (schema) {
+      const ajv = new Ajv({ allErrors: true });
+      this._validator = ajv.compile(schema);
+      this._runValidate(this._base);
+    }
+  }
+
+  private _runValidate(state: unknown): void {
+    if (!this._validator) return;
+    if (!this._validator(state)) {
+      const errors = (this._validator.errors ?? []).map((e) => ({
+        path: e.instancePath || '/',
+        message: e.message ?? 'invalid',
+      }));
+      throw new ValidationError(errors);
+    }
   }
 
   get version(): number {
@@ -199,6 +216,13 @@ export class Engine<T = unknown> {
       }
     }
 
+    try {
+      this._runValidate(this._currentState());
+    } catch (err) {
+      for (const op of compensatingOps) this._ops.delete(op.path);
+      for (const op of removedOps) this._ops.set(op.path, op);
+      throw err;
+    }
     this._undoStack.push({
       kind: 'reset',
       ops: compensatingOps,
@@ -308,7 +332,15 @@ export class Engine<T = unknown> {
       insertAt,
     };
 
+    const prevAtPath = ops.get(path);
     ops.set(path, op);
+    try {
+      this._runValidate(this._currentState());
+    } catch (err) {
+      if (prevAtPath !== undefined) ops.set(path, prevAtPath);
+      else ops.delete(path);
+      throw err;
+    }
     undoStack.push({ kind: 'propose', ops: [op] });
     redoStack.length = 0;
     this._bump();
@@ -356,8 +388,20 @@ export class Engine<T = unknown> {
       this._autoResolveCopilotOps(to);
     }
 
+    const prevAtFrom = ops.get(from);
+    const prevAtTo = ops.get(to);
     ops.set(from, removeOp);
     ops.set(to, addOp);
+    try {
+      this._runValidate(this._currentState());
+    } catch (err) {
+      ops.delete(from);
+      ops.delete(to);
+      if (prevAtFrom !== undefined) ops.set(from, prevAtFrom);
+      if (prevAtTo !== undefined) ops.set(to, prevAtTo);
+      for (const op of removedDescendants) ops.set(op.path, op);
+      throw err;
+    }
     undoStack.push({ kind: 'propose', ops: [removeOp, addOp], undone: removedDescendants.length > 0 ? removedDescendants : undefined });
     redoStack.length = 0;
     this._bump();

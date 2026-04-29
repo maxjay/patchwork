@@ -49,6 +49,3 @@ export type NodeInfo = {
   base?: unknown;
 };
 
-export type EngineOptions<T> = {
-  validate?: (next: T) => void;
-};
