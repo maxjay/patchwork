@@ -40,3 +40,11 @@ export class PathNotFoundError extends OnionskinError {
     super(`Path does not exist: ${path}`);
   }
 }
+
+import type { SchemaError } from './types.js';
+
+export class ValidationError extends OnionskinError {
+  constructor(public errors: SchemaError[]) {
+    super(`Validation failed: ${errors.map((e) => `${e.path} ${e.message}`).join('; ')}`);
+  }
+}

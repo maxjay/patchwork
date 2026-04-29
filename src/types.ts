@@ -35,6 +35,18 @@ export type DiffTreeNode = {
   children: Map<string, DiffTreeNode>;
 };
 
+/** A single schema validation failure. Mirrors ajv's error shape. */
+export type SchemaError = {
+  /** JSON Pointer to the data that failed validation. */
+  path: string;
+  /** Standard JSON Schema keyword that failed (e.g. 'type', 'minimum', 'required'). */
+  keyword: string;
+  /** Human-readable failure reason. */
+  message: string;
+  /** Keyword-specific structured params (e.g. { limit: 1 } for 'minimum'). */
+  params?: object;
+};
+
 /** Metadata about a node at a path in the document. */
 export type NodeInfo = {
   path: string;
@@ -49,6 +61,3 @@ export type NodeInfo = {
   base?: unknown;
 };
 
-export type EngineOptions<T> = {
-  validate?: (next: T) => void;
-};

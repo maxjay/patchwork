@@ -1,5 +1,4 @@
 import { Engine } from '../engine.js';
-import type { EngineOptions } from '../types.js';
 import { deepEqual } from '../util.js';
 
 /**
@@ -21,9 +20,9 @@ export interface Subscribable<T> {
  */
 export function createEngine<T = unknown>(
   base: T,
-  opts?: EngineOptions<T>,
+  schema?: object,
 ): { engine: Engine<T>; version$: Subscribable<number> } {
-  const engine = new Engine(base, opts);
+  const engine = new Engine(base, schema);
   return { engine, version$: observeVersion(engine) };
 }
 

@@ -1,6 +1,5 @@
 import { readable, derived, type Readable } from 'svelte/store';
 import { Engine } from '../engine.js';
-import type { EngineOptions } from '../types.js';
 import { deepEqual } from '../util.js';
 
 /**
@@ -15,9 +14,9 @@ import { deepEqual } from '../util.js';
  */
 export function createEngine<T = unknown>(
   base: T,
-  opts?: EngineOptions<T>,
+  schema?: object,
 ): { engine: Engine<T>; version: Readable<number> } {
-  const engine = new Engine(base, opts);
+  const engine = new Engine(base, schema);
   const version = engineStore(engine);
   return { engine, version };
 }

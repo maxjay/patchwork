@@ -1,15 +1,15 @@
 import { useSyncExternalStore, useRef, useMemo } from 'react';
 import { Engine } from '../engine.js';
-import type { EngineOptions, NodeInfo } from '../types.js';
+import type { NodeInfo } from '../types.js';
 import { deepEqual } from '../util.js';
 
 /**
  * Create an Engine and subscribe to its changes.
  * The component re-renders on every engine change.
  */
-export function useEngine<T = unknown>(base: T, opts?: EngineOptions<T>): Engine<T> {
+export function useEngine<T = unknown>(base: T, schema?: object): Engine<T> {
   const ref = useRef<Engine<T>>(undefined);
-  if (!ref.current) ref.current = new Engine(base, opts);
+  if (!ref.current) ref.current = new Engine(base, schema);
   useEngineState(ref.current);
   return ref.current;
 }

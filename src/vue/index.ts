@@ -1,6 +1,5 @@
 import { ref, computed, onScopeDispose, type Ref, type ComputedRef } from 'vue';
 import { Engine } from '../engine.js';
-import type { EngineOptions } from '../types.js';
 
 /**
  * Create an Engine and subscribe to its changes.
@@ -11,9 +10,9 @@ import type { EngineOptions } from '../types.js';
  */
 export function useEngine<T = unknown>(
   base: T,
-  opts?: EngineOptions<T>,
+  schema?: object,
 ): { engine: Engine<T>; version: Ref<number> } {
-  const engine = new Engine(base, opts);
+  const engine = new Engine(base, schema);
   const version = useEngineState(engine);
   return { engine, version };
 }
