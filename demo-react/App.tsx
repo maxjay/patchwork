@@ -1,7 +1,6 @@
-import { useRef } from 'react';
-import { useEngine, useNode, useExport } from '../src/react/index.js';
-import type { Engine } from '../src/engine.js';
-import type { NodeInfo } from '../src/types.js';
+import { useState, useRef } from 'react';
+import { useEngineState, useValue, useDiff } from '../src/react/index.js';
+import { Engine } from '../src/engine.js';
 import type { CopilotSession } from '../src/copilot.js';
 import type { DiffEntry } from '../src/types.js';
 import './style.css';
@@ -10,14 +9,8 @@ const INITIAL_CONFIG = {
   appName: 'my-service',
   timeout: 30,
   retries: 3,
-  server: {
-    host: 'localhost',
-    port: 8080,
-  },
-  features: {
-    darkMode: true,
-    analytics: false,
-  },
+  server: { host: 'localhost', port: 8080 },
+  features: { darkMode: true, analytics: false },
 };
 
 const SCHEMA = {
@@ -45,10 +38,12 @@ const SCHEMA = {
   },
 };
 
-// ─── App ─────────────────────────────────────────────────────────────────────
+// ── App ───────────────────────────────────────────────────────────────────────
+// App creates the engine but does NOT subscribe — each child subscribes only
+// to what it needs, giving true per-path reactivity.
 
 export function App() {
-  const engine = useEngine(INITIAL_CONFIG, SCHEMA);
+  const [engine] = useState(() => new Engine(INITIAL_CONFIG, SCHEMA));
 
   return (
     <div className="app">
@@ -56,113 +51,104 @@ export function App() {
         <h1>patchwork</h1>
         <span className="subtitle">copilot-native JSON editing engine</span>
       </header>
-
       <div className="layout">
         <div className="main-col">
-          <section className="card">
-            <div className="card-header">
-              <h2>Document</h2>
-              <div className="toolbar">
-                <button onClick={() => engine.undo()}>Undo</button>
-                <button onClick={() => engine.redo()}>Redo</button>
-                <button className="btn-accent" onClick={() => engine.apply()}>Apply</button>
-              </div>
-            </div>
-            <Node engine={engine} path="" depth={0} />
-          </section>
-
-          <section className="card">
-            <h2>User Actions</h2>
-            <div className="ops-list">
-              <ActionButton engine={engine} label="set /server/port → 443" op={{ kind: 'replace', path: '/server/port', value: 443 }} />
-              <ActionButton engine={engine} label="set /server/host → 0.0.0.0" op={{ kind: 'replace', path: '/server/host', value: '0.0.0.0' }} />
-              <ActionButton engine={engine} label="set /timeout → 60" op={{ kind: 'replace', path: '/timeout', value: 60 }} />
-              <ActionButton engine={engine} label="toggle /features/darkMode" op={{ kind: 'replace', path: '/features/darkMode', value: !INITIAL_CONFIG.features.darkMode }} />
-              <ActionButton engine={engine} label="add /server/ssl → true" op={{ kind: 'add', path: '/server/ssl', value: true }} />
-              <ActionButton engine={engine} label="remove /retries" op={{ kind: 'remove', path: '/retries' }} />
-            </div>
-            <div className="empty" style={{ marginTop: 8 }}>
-              Invalid ops are rejected by the schema — try undo after any action.
-            </div>
-          </section>
-
+          <DocumentSection engine={engine} />
+          <ActionsSection engine={engine} />
           <CopilotSection engine={engine} />
         </div>
-
         <div className="side-col">
-          <LiveDocument engine={engine} />
-          <DiffPanel engine={engine} />
-          <RenderTracker />
+          <CodePanel />
         </div>
       </div>
     </div>
   );
 }
 
-// ─── Node — reactive, read-only display ──────────────────────────────────────
+// ── Document ──────────────────────────────────────────────────────────────────
 
-function Node({ engine, path, depth }: { engine: Engine; path: string; depth: number }) {
-  const node = useNode(engine, path);
-  const renderCount = useRef(0);
-  renderCount.current++;
-
-  if (!node) return null;
-
-  if (node.keys) {
-    return (
-      <div className="node-object">
-        {node.key && (
-          <div className="group-label" style={{ paddingLeft: (depth - 1) * 20 }}>
-            <span className="render-badge" title="React render count">{renderCount.current}</span>
-            {node.key}
-          </div>
-        )}
-        {node.keys.map((k) => (
-          <Node key={k} engine={engine} path={`${path}/${k}`} depth={depth + 1} />
-        ))}
+function DocumentSection({ engine }: { engine: Engine }) {
+  return (
+    <section className="card">
+      <div className="card-header">
+        <h2>Document</h2>
+        <div className="toolbar">
+          <button onClick={() => engine.undo()}>Undo</button>
+          <button onClick={() => engine.redo()}>Redo</button>
+          <button className="btn-accent" onClick={() => engine.apply()}>Apply</button>
+        </div>
       </div>
-    );
-  }
-
-  return <Leaf node={node} depth={depth} renderCount={renderCount.current} />;
+      <Field engine={engine} path="/appName" />
+      <Field engine={engine} path="/timeout" />
+      <Field engine={engine} path="/retries" />
+      <div className="group-label">server</div>
+      <Field engine={engine} path="/server/host" depth={1} />
+      <Field engine={engine} path="/server/port" depth={1} />
+      <div className="group-label">features</div>
+      <Field engine={engine} path="/features/darkMode" depth={1} />
+      <Field engine={engine} path="/features/analytics" depth={1} />
+    </section>
+  );
 }
 
-function Leaf({ node, depth, renderCount }: { node: NodeInfo; depth: number; renderCount: number }) {
+// ── Field — the key primitive ─────────────────────────────────────────────────
+// Two hooks. Everything else is JSX.
+
+function Field({ engine, path, depth = 0 }: { engine: Engine; path: string; depth?: number }) {
+  const value = useValue(engine, path);
+  const diff  = useDiff(engine, path);
+  const renders = useRef(0);
+  renders.current++;
+
   return (
-    <div className={`field${node.changed ? ' changed' : ''}`} style={{ paddingLeft: depth * 20 }}>
-      <span className="render-badge" title="React render count">{renderCount}</span>
-      <span className="field-key">{node.key}</span>
+    <div className={`field${diff ? ' changed' : ''}`} style={{ paddingLeft: depth * 20 }}>
+      <span className="render-badge" title="React renders">{renders.current}</span>
+      <span className="field-key">{path.split('/').pop()}</span>
       <span className="field-colon">:</span>
-      <span className={`field-value type-${node.type}`}>{JSON.stringify(node.value)}</span>
-      {node.changed && (
+      <span className={`field-value type-${valueType(value)}`}>{JSON.stringify(value)}</span>
+      {diff && (
         <span className="diff-badge">
-          <span className="val-old">{JSON.stringify(node.base)}</span>
+          <span className="val-old">{JSON.stringify(diff.base)}</span>
           <span className="arrow">&rarr;</span>
-          <span className="val-new">{JSON.stringify(node.value)}</span>
+          <span className="val-new">{JSON.stringify(diff.current)}</span>
         </span>
       )}
     </div>
   );
 }
 
-// ─── Action Button ────────────────────────────────────────────────────────────
+// ── Actions ───────────────────────────────────────────────────────────────────
 
-function ActionButton({ engine, label, op }: { engine: Engine; label: string; op: Parameters<Engine['propose']>[0] }) {
-  const handleClick = () => {
-    try { engine.propose(op); } catch { /* schema rejected */ }
-  };
+function ActionsSection({ engine }: { engine: Engine }) {
+  const actions: Array<{ label: string; op: Parameters<Engine['propose']>[0] }> = [
+    { label: '/server/port → 443',          op: { kind: 'replace', path: '/server/port', value: 443 } },
+    { label: '/server/host → 0.0.0.0',      op: { kind: 'replace', path: '/server/host', value: '0.0.0.0' } },
+    { label: '/timeout → 60',               op: { kind: 'replace', path: '/timeout', value: 60 } },
+    { label: '/features/analytics → true',  op: { kind: 'replace', path: '/features/analytics', value: true } },
+    { label: '/server/ssl → true (add)',     op: { kind: 'add',     path: '/server/ssl', value: true } },
+    { label: '/retries (remove)',            op: { kind: 'remove',  path: '/retries' } },
+  ];
+
   return (
-    <div className="op-entry" style={{ justifyContent: 'space-between' }}>
-      <span className={`op-kind ${op.kind}`}>{op.kind}</span>
-      <span className="op-path" style={{ flex: 1, marginLeft: 6 }}>{label.replace(/^(add|replace|remove|toggle) /, '')}</span>
-      <button onClick={handleClick}>Run</button>
-    </div>
+    <section className="card">
+      <h2>User Actions</h2>
+      <div className="ops-list">
+        {actions.map(({ label, op }) => (
+          <div key={label} className="op-entry" style={{ justifyContent: 'space-between' }}>
+            <span className={`op-kind ${op.kind}`}>{op.kind}</span>
+            <span className="op-path" style={{ flex: 1, marginLeft: 6 }}>{label}</span>
+            <button onClick={() => { try { engine.propose(op); } catch {} }}>Run</button>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
-// ─── Copilot Section ──────────────────────────────────────────────────────────
+// ── Copilot ───────────────────────────────────────────────────────────────────
 
 function CopilotSection({ engine }: { engine: Engine }) {
+  useEngineState(engine); // subscribe to session start/end
   const session = engine.activeCopilotSession();
 
   return (
@@ -175,9 +161,8 @@ function CopilotSection({ engine }: { engine: Engine }) {
           </button>
         )}
       </div>
-
       {!session ? (
-        <div className="empty">No active copilot session. Click "Simulate Copilot" to see the approve/decline workflow.</div>
+        <div className="empty">No active session. Click "Simulate Copilot" to see the propose / approve / decline workflow.</div>
       ) : (
         <CopilotProposals session={session} />
       )}
@@ -188,19 +173,16 @@ function CopilotSection({ engine }: { engine: Engine }) {
 function simulateCopilot(engine: Engine) {
   const session = engine.startCopilot();
   session.propose([
-    { kind: 'replace', path: '/timeout', value: 60 },
-    { kind: 'replace', path: '/server/port', value: 443 },
-    { kind: 'add', path: '/server/ssl', value: true },
-    { kind: 'replace', path: '/features/analytics', value: true },
+    { kind: 'replace', path: '/timeout',              value: 60 },
+    { kind: 'replace', path: '/server/port',          value: 443 },
+    { kind: 'add',     path: '/server/ssl',           value: true },
+    { kind: 'replace', path: '/features/analytics',   value: true },
   ]);
 }
 
 function CopilotProposals({ session }: { session: CopilotSession }) {
   const proposals = session.diff();
-
-  if (proposals.length === 0) {
-    return <div className="empty">All proposals reviewed.</div>;
-  }
+  if (proposals.length === 0) return <div className="empty">All proposals reviewed.</div>;
 
   return (
     <div>
@@ -231,57 +213,88 @@ function CopilotProposals({ session }: { session: CopilotSession }) {
   );
 }
 
-// ─── Live Document ────────────────────────────────────────────────────────────
+// ── Code Panel ────────────────────────────────────────────────────────────────
 
-function LiveDocument({ engine }: { engine: Engine }) {
-  const doc = useExport(engine);
+function CodePanel() {
   return (
-    <section className="card">
-      <h2>Live Document</h2>
-      <pre className="json">{JSON.stringify(doc, null, 2)}</pre>
-      <div className="meta">version {engine.version}</div>
-    </section>
-  );
-}
+    <>
+      <section className="card">
+        <h2>Read State</h2>
+        <pre className="code">{
+`const value = useValue(engine, path)
+const diff  = useDiff(engine, path)
+// diff → { base, current } | null`
+        }</pre>
+        <p className="code-note">
+          Edit a single field — only that field's badge increments.
+          Each <code>Field</code> subscribes independently.
+        </p>
+      </section>
 
-// ─── Diff Panel ───────────────────────────────────────────────────────────────
+      <section className="card">
+        <h2>Make Changes</h2>
+        <pre className="code">{
+`engine.propose({ kind: 'replace',
+  path: '/server/port', value: 443 })
 
-function DiffPanel({ engine }: { engine: Engine }) {
-  const ops = engine.diff();
-  return (
-    <section className="card">
-      <h2>User Ops ({ops.length})</h2>
-      {ops.length === 0 ? (
-        <div className="empty">No pending changes</div>
-      ) : (
-        <div className="ops-list">
-          {ops.map((op) => (
-            <div key={op.path} className="op-entry">
-              <span className={`op-kind ${op.kind}`}>{op.kind}</span>
-              <span className="op-path">{op.path}</span>
-              {op.prev !== undefined && <span className="val-old">{JSON.stringify(op.prev)}</span>}
-              {op.prev !== undefined && op.value !== undefined && <span className="arrow">&rarr;</span>}
-              {op.value !== undefined && <span className="val-new">{JSON.stringify(op.value)}</span>}
-            </div>
-          ))}
+engine.undo()   // full history — zero impl
+engine.redo()
+engine.apply()  // fold edits into base`
+        }</pre>
+      </section>
+
+      <section className="card">
+        <h2>Copilot Workflow</h2>
+        <pre className="code">{
+`const session = engine.startCopilot()
+session.propose([
+  { kind: 'replace', path: '/server/port',
+    value: 443 },
+])
+
+session.approve('/server/port') // → undo stack
+session.decline('/server/ssl')  // dropped
+session.approveAll()`
+        }</pre>
+      </section>
+
+      <section className="card">
+        <h2>What You Wrote</h2>
+        <div className="stat-grid">
+          <StatRow label="Field (value + diff + badge)" value="14 lines" />
+          <StatRow label="Copilot UI"                   value="22 lines" />
+          <StatRow label="Actions + layout"             value="~30 lines" />
+          <StatRow label="Total"                        value="~66 lines" bold />
         </div>
-      )}
-    </section>
+
+        <div className="stat-divider" />
+
+        <h2>What Patchwork Handles</h2>
+        <div className="stat-grid">
+          <StatRow label="State management"   value="0 lines" zero />
+          <StatRow label="Undo / redo"        value="0 lines" zero />
+          <StatRow label="Diff tracking"      value="0 lines" zero />
+          <StatRow label="Per-path reactivity" value="0 lines" zero />
+          <StatRow label="Conflict detection" value="0 lines" zero />
+          <StatRow label="Schema validation"  value="0 lines" zero />
+        </div>
+      </section>
+    </>
   );
 }
 
-// ─── Render Tracker ───────────────────────────────────────────────────────────
-
-function RenderTracker() {
+function StatRow({ label, value, bold, zero }: { label: string; value: string; bold?: boolean; zero?: boolean }) {
   return (
-    <section className="card">
-      <h2>Per-Path Reactivity</h2>
-      <div className="empty" style={{ lineHeight: 1.6 }}>
-        Each node shows a <span className="render-badge inline">n</span> badge counting
-        its React renders. Run an action and watch — only the affected path's
-        counter increments. Object nodes only re-render when keys are
-        added or removed. All powered by one hook: <code>useNode</code>.
-      </div>
-    </section>
+    <div className={`stat-row${bold ? ' stat-bold' : ''}`}>
+      <span className="stat-label">{label}</span>
+      <span className={`stat-val${zero ? ' stat-zero' : ''}`}>{value}</span>
+    </div>
   );
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function valueType(v: unknown): string {
+  if (v === null) return 'null';
+  return typeof v;
 }
