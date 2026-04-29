@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback } from 'react';
+import { useRef, useState, useEffect } from 'react';
 import { useEngine, useNode, useExport } from '../src/react/index.js';
 import type { Engine } from '../src/engine.js';
 import type { NodeInfo } from '../src/types.js';
@@ -20,10 +20,35 @@ const INITIAL_CONFIG = {
   },
 };
 
+const SCHEMA = {
+  type: 'object',
+  required: ['appName', 'timeout', 'retries', 'server'],
+  properties: {
+    appName: { type: 'string', minLength: 1 },
+    timeout: { type: 'integer', minimum: 0, maximum: 300 },
+    retries: { type: 'integer', minimum: 0, maximum: 10 },
+    server: {
+      type: 'object',
+      required: ['host', 'port'],
+      properties: {
+        host: { type: 'string', minLength: 1 },
+        port: { type: 'integer', minimum: 1, maximum: 65535 },
+      },
+    },
+    features: {
+      type: 'object',
+      properties: {
+        darkMode: { type: 'boolean' },
+        analytics: { type: 'boolean' },
+      },
+    },
+  },
+};
+
 // ─── App ────────────────────────────────────────────────────────────────────
 
 export function App() {
-  const engine = useEngine(INITIAL_CONFIG);
+  const engine = useEngine(INITIAL_CONFIG, SCHEMA);
 
   return (
     <div className="app">
@@ -110,28 +135,37 @@ function LeafField({
   depth: number;
   renderCount: number;
 }) {
-  const handleCommit = useCallback((e: React.FocusEvent<HTMLInputElement> | React.KeyboardEvent<HTMLInputElement>) => {
-    const input = e.target as HTMLInputElement;
-    const raw = input.value.trim();
-    const parsed = parseValue(raw);
-    if (parsed !== node.value) {
-      engine.propose({ kind: 'replace', path: node.path, value: parsed });
-    }
-  }, [engine, node.path, node.value]);
+  const [draft, setDraft] = useState(String(node.value));
+
+  // Sync draft when engine value changes externally (undo, copilot approve, etc.)
+  useEffect(() => {
+    setDraft(String(node.value));
+  }, [node.value]);
+
+  const parsed = parseValue(draft);
+  const validationError = engine.checkValue(node.path, parsed);
+
+  const commit = () => {
+    if (validationError || parsed === node.value) return;
+    engine.propose({ kind: 'replace', path: node.path, value: parsed });
+  };
 
   return (
-    <div className={`field${node.changed ? ' changed' : ''}`} style={{ paddingLeft: depth * 20 }}>
+    <div
+      className={`field${node.changed ? ' changed' : ''}${validationError ? ' invalid' : ''}`}
+      style={{ paddingLeft: depth * 20 }}
+    >
       <span className="render-badge" title="React render count">{renderCount}</span>
       <span className="field-key">{node.key}</span>
       <span className="field-colon">:</span>
       <input
-        className={`field-input type-${node.type}`}
-        defaultValue={String(node.value)}
-        key={`${node.path}:${String(node.value)}`}
-        onBlur={handleCommit}
-        onKeyDown={(e) => { if (e.key === 'Enter') handleCommit(e); }}
+        className={`field-input type-${node.type}${validationError ? ' invalid' : ''}`}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => { if (e.key === 'Enter') commit(); }}
       />
-      {node.changed && (
+      {node.changed && !validationError && (
         <button className="btn-reset" onClick={() => engine.reset(node.path)} title="Reset to base">
           &#8617;
         </button>
@@ -139,13 +173,15 @@ function LeafField({
       <button className="btn-remove" onClick={() => engine.propose({ kind: 'remove', path: node.path })} title="Remove field">
         &times;
       </button>
-      {node.changed && (
+      {validationError ? (
+        <span className="validation-error">{validationError.errors[0].message}</span>
+      ) : node.changed ? (
         <span className="diff-badge">
           <span className="val-old">{JSON.stringify(node.base)}</span>
           <span className="arrow">&rarr;</span>
           <span className="val-new">{JSON.stringify(node.value)}</span>
         </span>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -159,9 +195,13 @@ function AddField({ engine }: { engine: Engine }) {
   const submit = () => {
     if (!path) return;
     const resolved = path.startsWith('/') ? path : `/${path}`;
-    engine.propose({ kind: 'add', path: resolved, value: parseValue(value) });
-    setPath('');
-    setValue('');
+    try {
+      engine.propose({ kind: 'add', path: resolved, value: parseValue(value) });
+      setPath('');
+      setValue('');
+    } catch {
+      // schema rejected — leave inputs so user can correct
+    }
   };
 
   return (
@@ -186,7 +226,7 @@ function MoveField({ engine }: { engine: Engine }) {
       setFrom('');
       setTo('');
     } catch {
-      // path not found
+      // path not found or schema rejected
     }
   };
 

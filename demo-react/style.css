@@ -406,3 +406,26 @@ button:hover {
   font-style: italic;
   padding: 4px 0;
 }
+
+/* ─── Validation ──────────────────────────────────────────── */
+
+.field.invalid {
+  background: rgba(248, 81, 73, 0.05);
+}
+
+.field-input.invalid {
+  border-color: #f85149;
+  color: #f85149;
+}
+
+.field-input.invalid:focus {
+  border-color: #f85149;
+}
+
+.validation-error {
+  font-size: 10px;
+  color: #f85149;
+  margin-left: auto;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
