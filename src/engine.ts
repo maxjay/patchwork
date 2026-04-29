@@ -76,6 +76,14 @@ export class Engine<T = unknown> {
     return this._version;
   }
 
+  get canUndo(): boolean {
+    return this._undoStack.length > 0;
+  }
+
+  get canRedo(): boolean {
+    return this._redoStack.length > 0;
+  }
+
   /** @internal */
   _bump(): void {
     this._version++;

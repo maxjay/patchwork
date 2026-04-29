@@ -1,11 +1,15 @@
-import { useState, useRef } from 'react';
-import { useEngineState, useValue, useDiff } from '../src/react/index.js';
+import { useState } from 'react';
+import {
+  useValue, useDiff, useExport, useEngineState,
+  useCanUndo, useCanRedo, usePendingDiff, useFieldValidation,
+} from '../src/react/index.js';
 import { Engine } from '../src/engine.js';
-import type { CopilotSession } from '../src/copilot.js';
-import type { DiffEntry } from '../src/types.js';
+import type { Op } from '../src/types.js';
 import './style.css';
 
-const INITIAL_CONFIG = {
+// ─── Config + Schema ─────────────────────────────────────────────────────────
+
+const BASE = {
   appName: 'my-service',
   timeout: 30,
   retries: 3,
@@ -31,33 +35,34 @@ const SCHEMA = {
     features: {
       type: 'object',
       properties: {
-        darkMode: { type: 'boolean' },
+        darkMode:  { type: 'boolean' },
         analytics: { type: 'boolean' },
       },
     },
   },
 };
 
-// ── App ───────────────────────────────────────────────────────────────────────
-// App creates the engine but does NOT subscribe — each child subscribes only
-// to what it needs, giving true per-path reactivity.
+// ─── App ─────────────────────────────────────────────────────────────────────
+// Engine is created once. No subscription here — children subscribe to only
+// what they need, so editing /server/port won't re-render /appName.
 
 export function App() {
-  const [engine] = useState(() => new Engine(INITIAL_CONFIG, SCHEMA));
-
+  const [engine] = useState(() => new Engine(BASE, SCHEMA));
   return (
     <div className="app">
       <header>
         <h1>patchwork</h1>
-        <span className="subtitle">copilot-native JSON editing engine</span>
+        <span className="subtitle">track changes · validate · undo</span>
       </header>
       <div className="layout">
         <div className="main-col">
-          <DocumentSection engine={engine} />
-          <ActionsSection engine={engine} />
+          <EditorSection engine={engine} />
+          <OpsPanel engine={engine} />
           <CopilotSection engine={engine} />
         </div>
         <div className="side-col">
+          <BaseDoc engine={engine} />
+          <CurrentDoc engine={engine} />
           <CodePanel />
         </div>
       </div>
@@ -65,19 +70,25 @@ export function App() {
   );
 }
 
-// ── Document ──────────────────────────────────────────────────────────────────
+// ─── EditorSection ────────────────────────────────────────────────────────────
 
-function DocumentSection({ engine }: { engine: Engine }) {
+function EditorSection({ engine }: { engine: Engine }) {
+  const canUndo = useCanUndo(engine);
+  const canRedo = useCanRedo(engine);
+
   return (
     <section className="card">
       <div className="card-header">
-        <h2>Document</h2>
+        <h2>Config Editor</h2>
         <div className="toolbar">
-          <button onClick={() => engine.undo()}>Undo</button>
-          <button onClick={() => engine.redo()}>Redo</button>
-          <button className="btn-accent" onClick={() => engine.apply()}>Apply</button>
+          <button disabled={!canUndo} onClick={() => engine.undo()}>Undo</button>
+          <button disabled={!canRedo} onClick={() => engine.redo()}>Redo</button>
+          <button className="btn-accent" onClick={() => { try { engine.apply(); } catch {} }}>
+            Apply
+          </button>
         </div>
       </div>
+
       <Field engine={engine} path="/appName" />
       <Field engine={engine} path="/timeout" />
       <Field engine={engine} path="/retries" />
@@ -87,214 +98,383 @@ function DocumentSection({ engine }: { engine: Engine }) {
       <div className="group-label">features</div>
       <Field engine={engine} path="/features/darkMode" depth={1} />
       <Field engine={engine} path="/features/analytics" depth={1} />
+
+      <AddFieldForm engine={engine} />
     </section>
   );
 }
 
-// ── Field — the key primitive ─────────────────────────────────────────────────
-// Two hooks. Everything else is JSX.
+// ─── Field ────────────────────────────────────────────────────────────────────
+// Two hooks. Click any value to edit it in place.
 
 function Field({ engine, path, depth = 0 }: { engine: Engine; path: string; depth?: number }) {
   const value = useValue(engine, path);
   const diff  = useDiff(engine, path);
-  const renders = useRef(0);
-  renders.current++;
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft]     = useState('');
+  const key = path.split('/').pop()!;
+
+  // Booleans use a checkbox — direct propose on change, no draft state needed.
+  if (typeof value === 'boolean') {
+    return (
+      <div className={`field${diff ? ' changed' : ''}`} style={{ paddingLeft: depth * 20 }}>
+        <span className="field-key">{key}</span>
+        <span className="field-colon">:</span>
+        <input
+          type="checkbox"
+          className="field-checkbox"
+          checked={value}
+          onChange={e => {
+            try { engine.propose({ kind: 'replace', path, value: e.target.checked }); } catch {}
+          }}
+        />
+        {diff && <DiffBadge diff={diff} />}
+        {diff && <button className="btn-revert" onClick={() => engine.revert(path)}>↩</button>}
+      </div>
+    );
+  }
+
+  function startEdit() {
+    setDraft(String(value));
+    setEditing(true);
+  }
+
+  function commit(parsed: unknown) {
+    try {
+      engine.propose({ kind: 'replace', path, value: parsed });
+      setEditing(false);
+    } catch {}
+  }
 
   return (
     <div className={`field${diff ? ' changed' : ''}`} style={{ paddingLeft: depth * 20 }}>
-      <span className="render-badge" title="React renders">{renders.current}</span>
-      <span className="field-key">{path.split('/').pop()}</span>
+      <span className="field-key">{key}</span>
       <span className="field-colon">:</span>
-      <span className={`field-value type-${valueType(value)}`}>{JSON.stringify(value)}</span>
-      {diff && (
-        <span className="diff-badge">
-          <span className="val-old">{JSON.stringify(diff.base)}</span>
-          <span className="arrow">&rarr;</span>
-          <span className="val-new">{JSON.stringify(diff.current)}</span>
-        </span>
-      )}
-    </div>
-  );
-}
-
-// ── Actions ───────────────────────────────────────────────────────────────────
-
-function ActionsSection({ engine }: { engine: Engine }) {
-  const actions: Array<{ label: string; op: Parameters<Engine['propose']>[0] }> = [
-    { label: '/server/port → 443',          op: { kind: 'replace', path: '/server/port', value: 443 } },
-    { label: '/server/host → 0.0.0.0',      op: { kind: 'replace', path: '/server/host', value: '0.0.0.0' } },
-    { label: '/timeout → 60',               op: { kind: 'replace', path: '/timeout', value: 60 } },
-    { label: '/features/analytics → true',  op: { kind: 'replace', path: '/features/analytics', value: true } },
-    { label: '/server/ssl → true (add)',     op: { kind: 'add',     path: '/server/ssl', value: true } },
-    { label: '/retries (remove)',            op: { kind: 'remove',  path: '/retries' } },
-  ];
-
-  return (
-    <section className="card">
-      <h2>User Actions</h2>
-      <div className="ops-list">
-        {actions.map(({ label, op }) => (
-          <div key={label} className="op-entry" style={{ justifyContent: 'space-between' }}>
-            <span className={`op-kind ${op.kind}`}>{op.kind}</span>
-            <span className="op-path" style={{ flex: 1, marginLeft: 6 }}>{label}</span>
-            <button onClick={() => { try { engine.propose(op); } catch {} }}>Run</button>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-// ── Copilot ───────────────────────────────────────────────────────────────────
-
-function CopilotSection({ engine }: { engine: Engine }) {
-  useEngineState(engine); // subscribe to session start/end
-  const session = engine.activeCopilotSession();
-
-  return (
-    <section className="card">
-      <div className="card-header">
-        <h2>Copilot Session</h2>
-        {!session && (
-          <button className="btn-accent" onClick={() => simulateCopilot(engine)}>
-            Simulate Copilot
-          </button>
-        )}
-      </div>
-      {!session ? (
-        <div className="empty">No active session. Click "Simulate Copilot" to see the propose / approve / decline workflow.</div>
+      {editing ? (
+        <FieldInput
+          engine={engine}
+          path={path}
+          draft={draft}
+          baseValue={engine.getBase(path)}
+          onChange={setDraft}
+          onCommit={commit}
+          onCancel={() => setEditing(false)}
+        />
       ) : (
-        <CopilotProposals session={session} />
+        <>
+          <span
+            className={`field-value type-${typeof value}`}
+            onClick={startEdit}
+            title="Click to edit"
+          >
+            {JSON.stringify(value)}
+          </span>
+          {diff && <DiffBadge diff={diff} />}
+          {diff && <button className="btn-revert" onClick={() => engine.revert(path)}>↩</button>}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── FieldInput ───────────────────────────────────────────────────────────────
+// Separate component so useFieldValidation is called unconditionally
+// (only mounts while parent Field is in edit mode).
+
+function FieldInput({ engine, path, draft, baseValue, onChange, onCommit, onCancel }: {
+  engine: Engine;
+  path: string;
+  draft: string;
+  baseValue: unknown;
+  onChange: (v: string) => void;
+  onCommit: (parsed: unknown) => void;
+  onCancel: () => void;
+}) {
+  const parsed = parseValue(draft, baseValue);
+  const error  = useFieldValidation(engine, path, parsed);
+
+  function tryCommit() {
+    if (!error) onCommit(parsed);
+  }
+
+  return (
+    <span className="field-edit">
+      <input
+        className={`field-input${error ? ' invalid' : ''}`}
+        value={draft}
+        autoFocus
+        onChange={e => onChange(e.target.value)}
+        onKeyDown={e => {
+          if (e.key === 'Enter')  tryCommit();
+          if (e.key === 'Escape') onCancel();
+        }}
+      />
+      <button className="btn-confirm" onClick={tryCommit} disabled={!!error}>✓</button>
+      <button className="btn-cancel"  onClick={onCancel}>✕</button>
+      {error && <span className="field-error">{error.errors[0]?.message}</span>}
+    </span>
+  );
+}
+
+// ─── DiffBadge ────────────────────────────────────────────────────────────────
+
+function DiffBadge({ diff }: { diff: { base: unknown; current: unknown } }) {
+  return (
+    <span className="diff-badge">
+      <span className="val-old">{JSON.stringify(diff.base)}</span>
+      <span className="arrow">→</span>
+      <span className="val-new">{JSON.stringify(diff.current)}</span>
+    </span>
+  );
+}
+
+// ─── AddFieldForm ─────────────────────────────────────────────────────────────
+// Type a JSON Pointer path + raw JSON value to stage a new field.
+
+function AddFieldForm({ engine }: { engine: Engine }) {
+  const [addPath, setAddPath] = useState('');
+  const [addRaw,  setAddRaw]  = useState('');
+  const [formErr, setFormErr] = useState('');
+
+  const validPath = addPath.startsWith('/') && addPath.length > 1;
+
+  let parsedAdd: unknown;
+  let jsonOk = false;
+  try { if (addRaw.trim()) { parsedAdd = JSON.parse(addRaw); jsonOk = true; } } catch {}
+
+  // Only run schema validation when we have a valid path and valid JSON — avoids
+  // showing schema errors for undefined when the user is mid-typing a JSON value.
+  const valError = useFieldValidation(
+    engine,
+    validPath ? addPath : '/appName',
+    validPath && jsonOk ? parsedAdd : engine.getBase('/appName'),
+  );
+
+  function submit() {
+    setFormErr('');
+    if (!validPath) { setFormErr('Path must start with /'); return; }
+    if (!jsonOk)    { setFormErr('Value must be valid JSON'); return; }
+    try {
+      const existing = (() => { try { return engine.get(addPath); } catch { return undefined; } })();
+      engine.propose({ kind: existing === undefined ? 'add' : 'replace', path: addPath, value: parsedAdd });
+      setAddPath('');
+      setAddRaw('');
+    } catch (e: unknown) {
+      setFormErr(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  return (
+    <div className="add-form">
+      <input
+        className="add-path"
+        placeholder="/path/to/field"
+        value={addPath}
+        onChange={e => { setAddPath(e.target.value); setFormErr(''); }}
+        onKeyDown={e => e.key === 'Enter' && submit()}
+      />
+      <input
+        className="add-value"
+        placeholder="value (JSON)"
+        value={addRaw}
+        onChange={e => { setAddRaw(e.target.value); setFormErr(''); }}
+        onKeyDown={e => e.key === 'Enter' && submit()}
+      />
+      <button onClick={submit}>Add</button>
+      {validPath && jsonOk && valError && (
+        <span className="form-error">{valError.errors[0]?.message}</span>
+      )}
+      {validPath && addRaw.trim() && !jsonOk && (
+        <span className="form-error">Value must be valid JSON</span>
+      )}
+      {formErr && <span className="form-error">{formErr}</span>}
+    </div>
+  );
+}
+
+// ─── OpsPanel ─────────────────────────────────────────────────────────────────
+// Every pending change, in proposal order. Revert any op individually.
+
+function OpsPanel({ engine }: { engine: Engine }) {
+  const pending = usePendingDiff(engine);
+
+  return (
+    <section className="card">
+      <h2>
+        Pending Changes
+        {pending.length > 0 && <span className="count">{pending.length}</span>}
+      </h2>
+      {pending.length === 0 ? (
+        <div className="empty">No pending changes.</div>
+      ) : (
+        <div className="ops-list">
+          {pending.map((op: Op) => (
+            <div key={op.path} className="op-row">
+              <span className={`op-kind ${op.kind}`}>{op.kind}</span>
+              <span className="op-path">{op.path}</span>
+              <span className="op-vals">
+                {op.prev  !== undefined && <span className="val-old">{JSON.stringify(op.prev)}</span>}
+                {op.prev  !== undefined && op.value !== undefined && <span className="arrow">→</span>}
+                {op.value !== undefined && <span className="val-new">{JSON.stringify(op.value)}</span>}
+              </span>
+              <button
+                className="btn-revert"
+                onClick={() => { try { engine.revert(op.path); } catch {} }}
+              >↩</button>
+            </div>
+          ))}
+        </div>
       )}
     </section>
   );
 }
 
-function simulateCopilot(engine: Engine) {
-  const session = engine.startCopilot();
-  session.propose([
-    { kind: 'replace', path: '/timeout',              value: 60 },
-    { kind: 'replace', path: '/server/port',          value: 443 },
-    { kind: 'add',     path: '/server/ssl',           value: true },
-    { kind: 'replace', path: '/features/analytics',   value: true },
-  ]);
-}
+// ─── BaseDoc / CurrentDoc ─────────────────────────────────────────────────────
 
-function CopilotProposals({ session }: { session: CopilotSession }) {
-  const proposals = session.diff();
-  if (proposals.length === 0) return <div className="empty">All proposals reviewed.</div>;
-
+function BaseDoc({ engine }: { engine: Engine }) {
+  useEngineState(engine); // re-render when apply() updates the base
   return (
-    <div>
-      <div className="proposals">
-        {proposals.map((op: DiffEntry) => (
-          <div key={op.path} className={`proposal${op.conflictsWithUser ? ' conflict' : ''}`}>
-            <span className={`op-kind ${op.kind}`}>{op.kind}</span>
-            <span className="op-path">{op.path}</span>
-            <span className="op-values">
-              {op.prev !== undefined && <span className="val-old">{JSON.stringify(op.prev)}</span>}
-              {op.prev !== undefined && op.value !== undefined && <span className="arrow">&rarr;</span>}
-              {op.value !== undefined && <span className="val-new">{JSON.stringify(op.value)}</span>}
-            </span>
-            {op.conflictsWithUser && <span className="conflict-badge">conflict</span>}
-            <div className="proposal-actions">
-              <button className="btn-approve" onClick={() => session.approve(op.path)}>Approve</button>
-              <button className="btn-decline" onClick={() => session.decline(op.path)}>Decline</button>
-            </div>
-          </div>
-        ))}
-      </div>
-      <div className="bulk-actions">
-        <button className="btn-approve" onClick={() => session.approveAll()}>Approve All</button>
-        <button className="btn-decline" onClick={() => session.declineAll()}>Decline All</button>
-        <button onClick={() => session.end()}>End Session</button>
-      </div>
-    </div>
+    <section className="card">
+      <h2>Base</h2>
+      <pre className="code doc-scroll">{JSON.stringify(engine.getBase(''), null, 2)}</pre>
+    </section>
   );
 }
 
-// ── Code Panel ────────────────────────────────────────────────────────────────
+function CurrentDoc({ engine }: { engine: Engine }) {
+  const doc = useExport(engine);
+  return (
+    <section className="card">
+      <h2>Current</h2>
+      <pre className="code doc-scroll">{JSON.stringify(doc, null, 2)}</pre>
+    </section>
+  );
+}
+
+// ─── CodePanel ────────────────────────────────────────────────────────────────
 
 function CodePanel() {
   return (
     <>
       <section className="card">
-        <h2>Read State</h2>
-        <pre className="code">{
-`const value = useValue(engine, path)
+        <h2>Editable Field</h2>
+        <pre className="code">{`const value = useValue(engine, path)
 const diff  = useDiff(engine, path)
-// diff → { base, current } | null`
-        }</pre>
-        <p className="code-note">
-          Edit a single field — only that field's badge increments.
-          Each <code>Field</code> subscribes independently.
-        </p>
+
+// commit on Enter:
+engine.propose({ kind: 'replace', path, value })
+// per-field revert:
+engine.revert(path)`}</pre>
       </section>
 
       <section className="card">
-        <h2>Make Changes</h2>
-        <pre className="code">{
-`engine.propose({ kind: 'replace',
-  path: '/server/port', value: 443 })
-
-engine.undo()   // full history — zero impl
-engine.redo()
-engine.apply()  // fold edits into base`
-        }</pre>
+        <h2>Live Validation</h2>
+        <pre className="code">{`const error = useFieldValidation(
+  engine, path, draft
+)
+// null = valid — shown as you type`}</pre>
       </section>
 
       <section className="card">
-        <h2>Copilot Workflow</h2>
-        <pre className="code">{
-`const session = engine.startCopilot()
-session.propose([
-  { kind: 'replace', path: '/server/port',
-    value: 443 },
-])
+        <h2>Ops + Undo</h2>
+        <pre className="code">{`const pending = usePendingDiff(engine)
+const canUndo = useCanUndo(engine)
+const canRedo = useCanRedo(engine)
 
-session.approve('/server/port') // → undo stack
-session.decline('/server/ssl')  // dropped
-session.approveAll()`
-        }</pre>
+<button disabled={!canUndo}
+  onClick={() => engine.undo()} />`}</pre>
       </section>
 
       <section className="card">
-        <h2>What You Wrote</h2>
-        <div className="stat-grid">
-          <StatRow label="Field (value + diff + badge)" value="14 lines" />
-          <StatRow label="Copilot UI"                   value="22 lines" />
-          <StatRow label="Actions + layout"             value="~30 lines" />
-          <StatRow label="Total"                        value="~66 lines" bold />
-        </div>
-
-        <div className="stat-divider" />
-
         <h2>What Patchwork Handles</h2>
         <div className="stat-grid">
-          <StatRow label="State management"   value="0 lines" zero />
-          <StatRow label="Undo / redo"        value="0 lines" zero />
-          <StatRow label="Diff tracking"      value="0 lines" zero />
-          <StatRow label="Per-path reactivity" value="0 lines" zero />
-          <StatRow label="Conflict detection" value="0 lines" zero />
-          <StatRow label="Schema validation"  value="0 lines" zero />
+          <StatRow label="Change tracking"     />
+          <StatRow label="Schema validation"   />
+          <StatRow label="Undo / redo"         />
+          <StatRow label="Per-path reactivity" />
+          <StatRow label="Diff (prev → current)" />
         </div>
       </section>
     </>
   );
 }
 
-function StatRow({ label, value, bold, zero }: { label: string; value: string; bold?: boolean; zero?: boolean }) {
+function StatRow({ label }: { label: string }) {
   return (
-    <div className={`stat-row${bold ? ' stat-bold' : ''}`}>
+    <div className="stat-row">
       <span className="stat-label">{label}</span>
-      <span className={`stat-val${zero ? ' stat-zero' : ''}`}>{value}</span>
+      <span className="stat-val zero">0 lines</span>
     </div>
   );
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ─── CopilotSection (minimal) ─────────────────────────────────────────────────
 
-function valueType(v: unknown): string {
-  if (v === null) return 'null';
-  return typeof v;
+function CopilotSection({ engine }: { engine: Engine }) {
+  useEngineState(engine);
+  const session = engine.activeCopilotSession();
+
+  return (
+    <section className="card">
+      <div className="card-header">
+        <h2>Copilot</h2>
+        {!session && (
+          <button onClick={() => simulateCopilot(engine)}>Simulate</button>
+        )}
+      </div>
+
+      {!session ? (
+        <div className="empty">
+          Open a session to see AI proposals appear here for review.
+        </div>
+      ) : session.diff().length === 0 ? (
+        <div className="empty">All proposals reviewed.</div>
+      ) : (
+        <>
+          <div className="proposals">
+            {session.diff().map(op => (
+              <div key={op.path} className={`proposal${op.conflictsWithUser ? ' conflict' : ''}`}>
+                <span className={`op-kind ${op.kind}`}>{op.kind}</span>
+                <span className="op-path">{op.path}</span>
+                <span className="op-vals">
+                  {op.prev  !== undefined && <span className="val-old">{JSON.stringify(op.prev)}</span>}
+                  {op.prev  !== undefined && op.value !== undefined && <span className="arrow">→</span>}
+                  {op.value !== undefined && <span className="val-new">{JSON.stringify(op.value)}</span>}
+                </span>
+                {op.conflictsWithUser && <span className="conflict-tag">conflict</span>}
+                <div className="proposal-btns">
+                  <button className="btn-approve" onClick={() => session.approve(op.path)}>✓</button>
+                  <button className="btn-decline" onClick={() => session.decline(op.path)}>✕</button>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="bulk-row">
+            <button className="btn-approve" onClick={() => session.approveAll()}>Approve All</button>
+            <button className="btn-decline" onClick={() => session.declineAll()}>Decline All</button>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+function simulateCopilot(engine: Engine) {
+  const s = engine.startCopilot();
+  s.propose([
+    { kind: 'replace', path: '/timeout',            value: 60   },
+    { kind: 'replace', path: '/server/port',         value: 443  },
+    { kind: 'add',     path: '/server/ssl',          value: true },
+    { kind: 'replace', path: '/features/analytics', value: true },
+  ]);
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function parseValue(raw: string, original: unknown): unknown {
+  if (typeof original === 'number') {
+    const n = Number(raw);
+    return Number.isNaN(n) ? raw : n;
+  }
+  return raw;
 }
