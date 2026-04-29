@@ -1,5 +1,5 @@
 <p align="center">
-  <h1 align="center">onionskin</h1>
+  <h1 align="center">patchwork</h1>
   <p align="center">The editing engine for human-AI collaboration on structured data.</p>
 </p>
 
@@ -16,7 +16,7 @@
 
 <!-- TODO: Record a demo GIF showing: user edits config, asks AI to "make this production-ready",
      AI proposals appear, user approves some / declines others, undoes an approved change.
-     Place it here: ![onionskin demo](demo.gif) -->
+     Place it here: ![patchwork demo](demo.gif) -->
 
 ## Why
 
@@ -28,19 +28,19 @@ You're building an app where users edit structured data — config files, form b
 - Conflict detection when both human and AI touch the same field
 - The glue between your AI and your editor
 
-**That's onionskin.** One primitive that handles all of it.
+**That's patchwork.** One primitive that handles all of it.
 
 ```
 base document  +  user edits  +  copilot proposals  =  current state
                   (always applied)  (held for review)
 ```
 
-No other library does this. State managers (Redux, Zustand) don't have proposal layers. JSON editors (jsoneditor) are UI components, not engines. CRDTs (Yjs, Automerge) solve multi-user sync, not human-AI review. Onionskin is purpose-built for the moment an AI says *"here's what I'd change"* and a human says *"let me look at that first."*
+No other library does this. State managers (Redux, Zustand) don't have proposal layers. JSON editors (jsoneditor) are UI components, not engines. CRDTs (Yjs, Automerge) solve multi-user sync, not human-AI review. Patchwork is purpose-built for the moment an AI says *"here's what I'd change"* and a human says *"let me look at that first."*
 
 ## Install
 
 ```bash
-npm install onionskin
+npm install patchwork
 ```
 
 ## How it works
@@ -48,7 +48,7 @@ npm install onionskin
 ### 1. Wrap any JSON object
 
 ```ts
-import { Engine } from 'onionskin';
+import { Engine } from 'patchwork';
 
 const engine = new Engine({
   appName: 'my-service',
@@ -111,7 +111,7 @@ Approved changes land in the user's undo stack — `engine.undo()` rolls back an
 
 ### 4. Simultaneous editing just works
 
-The user doesn't have to stop editing while the AI is proposing. When their edits overlap, onionskin resolves it:
+The user doesn't have to stop editing while the AI is proposing. When their edits overlap, patchwork resolves it:
 
 ```ts
 const copilot = engine.startCopilot();
@@ -171,12 +171,12 @@ engine.undo();    // undo the apply itself
 
 Two layers: **tool definitions** you can plug into any LLM, and a **real MCP server** for native integration with Claude Desktop, Cursor, etc.
 
-### Tool definitions (`onionskin/tools`)
+### Tool definitions (`patchwork/tools`)
 
 Framework-neutral. Works with Anthropic API, OpenAI API, Vercel AI SDK, local models — anything that supports tool calling.
 
 ```ts
-import { createEditTools } from 'onionskin/tools';
+import { createEditTools } from 'patchwork/tools';
 
 const tools = createEditTools(engine);
 // 11 tools: start_session, end_session, propose, move, get_value,
@@ -195,13 +195,13 @@ for (const tool of tools) {
 
 The AI gets tool descriptions that explain the propose-then-review workflow. It calls `start_session`, reads the doc with `get_value`, proposes changes, and the user reviews in your UI.
 
-### MCP server (`onionskin/mcp`)
+### MCP server (`patchwork/mcp`)
 
 A real MCP server — JSON-RPC over stdio, connectable from Claude Desktop, Cursor, Claude Code, or any MCP client.
 
 ```ts
-import { Engine } from 'onionskin';
-import { createMcpServer } from 'onionskin/mcp';
+import { Engine } from 'patchwork';
+import { createMcpServer } from 'patchwork/mcp';
 
 const engine = new Engine(loadConfig());
 const { server, connect } = createMcpServer(engine);
@@ -223,7 +223,7 @@ Reactive, per-path subscriptions out of the box. A component reading `/server/po
 
 ```tsx
 import { useEngine, useValue }
-  from 'onionskin/react';
+  from 'patchwork/react';
 
 function PortInput() {
   const engine = useEngine(config);
@@ -240,7 +240,7 @@ function PortInput() {
 
 ```ts
 import { useEngine, useValue }
-  from 'onionskin/vue';
+  from 'patchwork/vue';
 
 const { engine } = useEngine(config);
 const port = useValue<number>(
@@ -259,7 +259,7 @@ const port = useValue<number>(
 ```svelte
 <script>
 import { createEngine, valueStore }
-  from 'onionskin/svelte';
+  from 'patchwork/svelte';
 
 const { engine } = createEngine(config);
 const port = valueStore(
@@ -275,7 +275,7 @@ const port = valueStore(
 
 ```ts
 import { observeValue }
-  from 'onionskin/angular';
+  from 'patchwork/angular';
 
 // works with async pipe, toSignal()
 readonly port = toSignal(
@@ -334,13 +334,13 @@ Each binding also exports `useDiff` / `diffStore` / `observeDiff` for per-path d
 ### Entrypoints
 
 ```
-onionskin            Engine, CopilotSession, types, errors
-onionskin/tools      Tool definitions for any LLM API
-onionskin/mcp        MCP server (JSON-RPC, stdio)
-onionskin/react      useEngine, useValue, useDiff, useExport
-onionskin/vue        useEngine, useValue, useDiff, useExport
-onionskin/svelte     createEngine, valueStore, diffStore, exportStore
-onionskin/angular    observeValue, observeDiff, observeExport
+patchwork            Engine, CopilotSession, types, errors
+patchwork/tools      Tool definitions for any LLM API
+patchwork/mcp        MCP server (JSON-RPC, stdio)
+patchwork/react      useEngine, useValue, useDiff, useExport
+patchwork/vue        useEngine, useValue, useDiff, useExport
+patchwork/svelte     createEngine, valueStore, diffStore, exportStore
+patchwork/angular    observeValue, observeDiff, observeExport
 ```
 
 ## Docs
