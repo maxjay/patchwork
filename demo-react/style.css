@@ -197,6 +197,16 @@ button:hover {
 .field-input.type-number { color: #79c0ff; }
 .field-input.type-boolean { color: #ff7b72; }
 
+.field-value {
+  color: #c9d1d9;
+  font-size: 13px;
+  flex: 1;
+}
+
+.field-value.type-string { color: #a5d6ff; }
+.field-value.type-number { color: #79c0ff; }
+.field-value.type-boolean { color: #ff7b72; }
+
 .btn-reset,
 .btn-remove {
   background: none;
@@ -405,4 +415,27 @@ button:hover {
   font-size: 12px;
   font-style: italic;
   padding: 4px 0;
+}
+
+/* ─── Validation ──────────────────────────────────────────── */
+
+.field.invalid {
+  background: rgba(248, 81, 73, 0.05);
+}
+
+.field-input.invalid {
+  border-color: #f85149;
+  color: #f85149;
+}
+
+.field-input.invalid:focus {
+  border-color: #f85149;
+}
+
+.validation-error {
+  font-size: 10px;
+  color: #f85149;
+  margin-left: auto;
+  flex-shrink: 0;
+  white-space: nowrap;
 }

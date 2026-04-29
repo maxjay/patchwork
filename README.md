@@ -167,6 +167,41 @@ engine.diff();    // [] — clean
 engine.undo();    // undo the apply itself
 ```
 
+### 7. Schema validation
+
+Pass a [JSON Schema](https://json-schema.org/) as the second argument. Invalid ops are rejected before they're staged — same validation applies to user edits and copilot proposals alike.
+
+```ts
+const engine = new Engine(config, {
+  type: 'object',
+  required: ['host', 'port'],
+  properties: {
+    host: { type: 'string' },
+    port: { type: 'integer', minimum: 1, maximum: 65535 },
+    mode: { enum: ['dev', 'staging', 'prod'] },
+  },
+});
+
+// invalid op — throws ValidationError, state unchanged
+engine.propose({ kind: 'replace', path: '/port', value: 'not-a-port' });
+```
+
+For live input feedback without committing an op, use `checkValue`:
+
+```ts
+const error = engine.checkValue('/port', userTypedValue);
+
+if (!error) {
+  // valid — show green border, enable submit
+} else {
+  error.errors[0].keyword;  // 'type', 'minimum', 'enum', 'required', ...
+  error.errors[0].message;  // 'must be integer'
+  error.errors[0].params;   // { type: 'integer' }
+}
+```
+
+`checkValue` is pure — it never mutates state or stages an op.
+
 ## AI integration
 
 Two layers: **tool definitions** you can plug into any LLM, and a **real MCP server** for native integration with Claude Desktop, Cursor, etc.
@@ -297,12 +332,12 @@ Each binding also exports `useDiff` / `diffStore` / `observeDiff` for per-path d
 
 | Method | Description |
 |---|---|
-| `new Engine(base)` | Wrap any JSON object |
+| `new Engine(base, schema?)` | Wrap any JSON object; optional JSON Schema for validation |
 | `.get(path)` | Read value (all layers) |
 | `.getBase(path)` | Read from base only |
 | `.getDiff(path)` | `{ base, current }` or `null` |
 | `.export()` | Full state as deep copy |
-| `.propose(op)` | `add` / `remove` / `replace` |
+| `.propose(op)` | `add` / `remove` / `replace` — throws `ValidationError` if schema rejects |
 | `.move(from, to)` | Rename or relocate (one undo step) |
 | `.revert(path)` | Remove op at path + descendants |
 | `.undo()` | Undo last action |
@@ -310,6 +345,7 @@ Each binding also exports `useDiff` / `diffStore` / `observeDiff` for per-path d
 | `.diff()` | Pending ops (flat) |
 | `.diffTree()` | Pending ops (tree) |
 | `.apply()` | Fold ops into base |
+| `.checkValue(path, value)` | Pure validity check — `null` if valid, `ValidationError` if not |
 | `.onChange(fn)` | Subscribe; returns unsubscribe fn |
 | `.startCopilot()` | Open copilot session |
 | `.version` | Monotonic change counter |
