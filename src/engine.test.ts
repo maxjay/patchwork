@@ -284,6 +284,87 @@ describe('Engine.revert', () => {
 	});
 });
 
+describe('Engine.accept', () => {
+	it('does not change base', () => {
+		const e = new Engine({ a: 1 });
+		e.replace('$.a', 2);
+		e.accept();
+		expect(e.base).toEqual({ a: 2 });
+	});
+
+	it('undo removes the checkpoint so decline falls back to original', () => {
+		const e = new Engine<any>({ a: 1 });
+		e.replace('$.a', 2);
+		e.accept();
+		e.undo(); // undo the accept — checkpoint removed
+		e.decline(); // no checkpoint, reverts to original
+		expect(e.base).toEqual({ a: 1 });
+	});
+
+	it('redo re-adds the checkpoint', () => {
+		const e = new Engine<any>({ a: 1 });
+		e.replace('$.a', 2);
+		e.accept();
+		e.undo(); // remove checkpoint
+		e.redo(); // re-add checkpoint
+		e.decline(); // checkpoint exists again, reverts to { a: 2 }
+		expect(e.base).toEqual({ a: 2 });
+	});
+});
+
+describe('Engine.decline', () => {
+	it('reverts base to the last checkpoint', () => {
+		const e = new Engine<any>({ a: 1 });
+		e.replace('$.a', 2);
+		e.accept();
+		e.replace('$.a', 99);
+		e.decline();
+		expect(e.base).toEqual({ a: 2 });
+	});
+
+	it('reverts to original when no checkpoints exist', () => {
+		const e = new Engine<any>({ a: 1 });
+		e.replace('$.a', 99);
+		e.decline();
+		expect(e.base).toEqual({ a: 1 });
+	});
+
+	it('reverts to the most recent checkpoint, not the oldest', () => {
+		const e = new Engine<any>({ a: 1 });
+		e.replace('$.a', 2);
+		e.accept();
+		e.replace('$.a', 3);
+		e.accept();
+		e.replace('$.a', 99);
+		e.decline();
+		expect(e.base).toEqual({ a: 3 });
+	});
+
+	it('undo restores the declined draft', () => {
+		const e = new Engine<any>({ a: 1 });
+		e.replace('$.a', 99);
+		e.decline();
+		expect(e.base).toEqual({ a: 1 });
+		e.undo(); // undo the decline
+		expect(e.base).toEqual({ a: 99 });
+	});
+
+	it('redo re-applies the decline', () => {
+		const e = new Engine<any>({ a: 1 });
+		e.replace('$.a', 99);
+		e.decline();
+		e.undo();
+		e.redo();
+		expect(e.base).toEqual({ a: 1 });
+	});
+
+	it('is a no-op when base equals original and no checkpoints exist', () => {
+		const e = new Engine({ a: 1 });
+		e.decline();
+		expect(e.base).toEqual({ a: 1 });
+	});
+});
+
 describe('Engine.move', () => {
 	it('moves a value from one path to another', () => {
 		const e = new Engine<any>({ a: { b: 3 }, x: 0 });
@@ -403,7 +484,7 @@ describe('Engine.move', () => {
 	});
 
 	it('throws when moving a path into one of its own descendants', () => {
-		const e = new Engine({ a: { b: { c: 1 } } } );
+		const e = new Engine({ a: { b: { c: 1 } } });
 		expect(() => e.move('$.a.b', '$.a.b.c.d')).toThrow('Invalid move target: cannot move a path into one of its own descendants');
 	});
 });
@@ -469,12 +550,12 @@ describe('Engine.copy', () => {
 	});
 
 	it('allows copying a path into one of its own descendants', () => {
-		const e = new Engine({ a: { b: { c: 1 } } } );
+		const e = new Engine({ a: { b: { c: 1 } } });
 		e.copy('$.a.b', '$.a.b.x');
-		expect(e.base).toEqual({ a: { b: { c: 1, x: { c: 1 } } } } );
-		
+		expect(e.base).toEqual({ a: { b: { c: 1, x: { c: 1 } } } });
+
 		e.undo();
-		expect(e.base).toEqual({ a: { b: { c: 1 } } } );
+		expect(e.base).toEqual({ a: { b: { c: 1 } } });
 	});
 });
 
