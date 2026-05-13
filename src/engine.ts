@@ -19,8 +19,8 @@ export interface Operation {
 // expressed as a JSONPath + the relevant values. Unlike Operation, it has no
 // knowledge of history or how to reverse anything — it's purely descriptive.
 export type DiffOp =
-	| { op: 'add';     path: string; value: JsonValue }
-	| { op: 'remove';  path: string; value: JsonValue }
+	| { op: 'add'; path: string; value: JsonValue }
+	| { op: 'remove'; path: string; value: JsonValue }
 	| { op: 'replace'; path: string; oldValue: JsonValue; value: JsonValue };
 
 export class Engine<T extends JsonValue = JsonValue> {
@@ -155,6 +155,42 @@ export class Engine<T extends JsonValue = JsonValue> {
 
 		doDelete();
 		this.pushOperation({ undo: undoDelete, redo: doDelete });
+	}
+
+	revert(jsonPath: string): void {
+		const pathsBase = paths(this.base, jsonPath);
+		const pathsOrig = paths(this.original, jsonPath);
+		const allPaths = Array.from(new Set([...pathsBase, ...pathsOrig]));
+
+		const segmentsList = allPaths.map(np => this.segmentsFrom(np));
+
+		const oldValues = segmentsList.map(seg => structuredClone(this.getAt(seg, this.base)));
+		const targetValues = segmentsList.map(seg => structuredClone(this.getAt(seg, this.original)));
+
+		const doRevert = () => {
+			for (let i = 0; i < segmentsList.length; i++) {
+				const val = targetValues[i];
+				if (val === undefined) {
+					this.removeAt(segmentsList[i]);
+				} else {
+					this.setAt(segmentsList[i], structuredClone(val));
+				}
+			}
+		};
+
+		const undoRevert = () => {
+			for (let i = 0; i < segmentsList.length; i++) {
+				const val = oldValues[i];
+				if (val === undefined) {
+					this.removeAt(segmentsList[i]);
+				} else {
+					this.setAt(segmentsList[i], structuredClone(val));
+				}
+			}
+		};
+
+		doRevert();
+		this.pushOperation({ undo: undoRevert, redo: doRevert });
 	}
 
 	// Returns the net difference between the original base (at construction) and
@@ -312,10 +348,14 @@ export class Engine<T extends JsonValue = JsonValue> {
 		return segments;
 	}
 
-	private getAt(segments: (string | number)[]): any {
-		if (segments.length === 0) return this.base;
-		let current: any = this.base;
-		for (let i = 0; i < segments.length - 1; i++) current = current[segments[i]];
+	private getAt(segments: (string | number)[], source: any = this.base): any {
+		if (segments.length === 0) return source;
+		let current: any = source;
+		for (let i = 0; i < segments.length - 1; i++) {
+			if (current === undefined || current === null) return undefined;
+			current = current[segments[i]];
+		}
+		if (current === undefined || current === null) return undefined;
 		return current[segments[segments.length - 1]];
 	}
 

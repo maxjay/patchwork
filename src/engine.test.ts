@@ -248,6 +248,42 @@ describe('Engine.diff', () => {
 	});
 });
 
+describe('Engine.revert', () => {
+	it('reverts a replaced value back to original', () => {
+		const e = new Engine({ a: 1 });
+		e.replace('$.a', 99);
+		expect(e.base).toEqual({ a: 99 });
+		e.revert('$.a');
+		expect(e.base).toEqual({ a: 1 });
+		e.undo(); // Undo the revert!
+		expect(e.base).toEqual({ a: 99 });
+	});
+
+	it('reverts an added value by deleting it', () => {
+		const e = new Engine<any>({ a: 1 });
+		e.add('$.b', 2);
+		expect(e.base).toEqual({ a: 1, b: 2 });
+		e.revert('$.b');
+		expect(e.base).toEqual({ a: 1 });
+	});
+
+	it('reverts a deleted value by restoring it', () => {
+		const e = new Engine<any>({ a: 1, b: 2 });
+		e.delete('$.b');
+		expect(e.base).toEqual({ a: 1 });
+		e.revert('$.b');
+		expect(e.base).toEqual({ a: 1, b: 2 });
+	});
+
+	it('handles wildcard reverts', () => {
+		const e = new Engine({ items: [1, 2, 3] });
+		e.replace('$.items[*]', 0);
+		expect(e.base).toEqual({ items: [0, 0, 0] });
+		e.revert('$.items[*]');
+		expect(e.base).toEqual({ items: [1, 2, 3] });
+	});
+});
+
 describe('Engine.move', () => {
 	it('moves a value from one path to another', () => {
 		const e = new Engine<any>({ a: { b: 3 }, x: 0 });
