@@ -106,13 +106,12 @@ export class Engine<T extends JsonValue = JsonValue> {
 		// const segments = this.segmentsFrom(jsonPath);
 		const normalizedPaths = this.jsonPathToNormalizedPaths(jsonPath);
 		if (normalizedPaths.length === 0) {
-			// treat as literal path to create if no matches
-			// if the jsonPath contains any query selectors, throw an error
-			// TODO - support this better
-			if (jsonPath.includes('*')) {
-				throw new Error(`Invalid JSONPath: ${jsonPath}`);
-			}
-			// e.g. 'a.b.c.d' creates { a: { b: { c: { d: value }}}}
+			// Path didn't resolve to anything in the document. Two reasons this happens:
+			//   1. It's a query (wildcard, filter, slice, descendant) that matched nothing
+			//      — nothing to create, so do nothing.
+			//   2. It's a literal path to a key/index that doesn't exist yet
+			//      — create the node (supports deep creation, e.g. $.a.b.c).
+			if (this.isQueryPath(jsonPath)) return;
 			this.upsertAt(this.segmentsFrom(jsonPath), value);
 			return;
 		}
@@ -326,6 +325,26 @@ export class Engine<T extends JsonValue = JsonValue> {
 			// (e.g. object → array). In both cases there's nothing to recurse into.
 			ops.push({ op: 'replace', path, oldValue: a, value: b });
 		}
+	}
+
+	// Returns true if the path contains any non-literal selector — wildcard, filter,
+	// slice, or descendant. These are query selectors that target existing nodes;
+	// they can't be used to create new ones, so add() should no-op when they match nothing.
+	private isQueryPath(jsonPath: string): boolean {
+		const ast = parse(jsonPath);
+		return ast.segments.some(seg => {
+			if (seg.type === 'DescendantSegment') return true;
+			const node = seg.node;
+			if (node.type === 'WildcardSelector') return true;
+			if (node.type === 'BracketedSelection') {
+				return node.selectors.some(s =>
+					s.type === 'WildcardSelector' ||
+					s.type === 'FilterSelector' ||
+					s.type === 'SliceSelector'
+				);
+			}
+			return false;
+		});
 	}
 
 	// Uses the library parser to extract (string | number) segments from a JSONPath.

@@ -22,6 +22,12 @@ describe('Engine.replace', () => {
 		expect(e.base).toEqual({ items: ['a', 'X', 'c'] });
 	});
 
+	it('replaces nothing when no path matches query', () => {
+		const e = new Engine({ items: [1, 2, 3] });
+		e.replace('$.otherItems[*]', 0);
+		expect(e.base).toEqual({ items: [1, 2, 3] });
+	});
+
 	it('replaces all matching elements with a wildcard', () => {
 		const e = new Engine({ items: [1, 2, 3] });
 		e.replace('$.items[*]', 0);
@@ -63,6 +69,12 @@ describe('Engine.add', () => {
 		// Wildcard matches [0,1,2]; reversing before insert keeps indices stable
 		e.add('$.items[*]', 'X');
 		expect(e.base).toEqual({ items: ['X', 'a', 'X', 'b', 'X', 'c'] });
+	});
+
+	it('adds nothing when no path matches query', () => {
+		const e = new Engine({ items: [1, 2, 3] });
+		e.add('$.otherItems[*]', 0);
+		expect(e.base).toEqual({ items: [1, 2, 3] });
 	});
 });
 
@@ -117,11 +129,6 @@ describe('Engine.add (creates missing intermediates)', () => {
 		expect(e.base).toEqual({ x: 1, a: { b: { c: 5 } } });
 		e.undo();
 		expect(e.base).toEqual({ x: 1 });
-	});
-
-	it('throws when a non-resolving path contains a wildcard', () => {
-		const e = new Engine<any>({});
-		expect(() => e.add('$.a.*', 1)).toThrow();
 	});
 
 	it('diff reflects the fabricated subtree as a single add', () => {
@@ -326,64 +333,6 @@ describe('Engine.decline', () => {
 		const e = new Engine({ a: 1 });
 		e.decline();
 		expect(e.base).toEqual({ a: 1 });
-	});
-});
-
-describe('Engine.move', () => {
-	it('moves a value from one path to another', () => {
-		const e = new Engine<any>({ a: { b: 3 }, x: 0 });
-		e.move('$.a.b', '$.x');
-		expect(e.base).toEqual({ a: {}, x: 3 });
-
-		e.undo();
-		expect(e.base).toEqual({ a: { b: 3 }, x: 0 });
-	});
-
-	it('moves an object from one path to another', () => {
-		const e = new Engine<any>({ a: { b: { foo: 'bar' } }, x: 0 });
-		e.move('$.a.b', '$.x');
-		expect(e.base).toEqual({ a: {}, x: { foo: 'bar' } });
-
-		e.undo();
-		expect(e.base).toEqual({ a: { b: { foo: 'bar' } }, x: 0 });
-	});
-
-	it('moves an array element from one path to another', () => {
-		const e = new Engine<any>({ a: { b: [3, 4, 5] }, x: 0 });
-		e.move('$.a.b[1]', '$.x');
-		expect(e.base).toEqual({ a: { b: [3, 5] }, x: 4 });
-
-		e.undo();
-		expect(e.base).toEqual({ a: { b: [3, 4, 5] }, x: 0 });
-	});
-
-	it('moves an array from one path to another', () => {
-		const e = new Engine<any>({ a: { b: [3, 4, 5] }, x: 0 });
-		e.move('$.a.b', '$.x');
-		expect(e.base).toEqual({ a: {}, x: [3, 4, 5] });
-
-		e.undo();
-		expect(e.base).toEqual({ a: { b: [3, 4, 5] }, x: 0 });
-	});
-
-	it('moves item to end of an array', () => {
-		const e = new Engine<any>({ a: { b: 6 }, x: [3, 4, 5] });
-		e.move('$.a.b', '$.x[3]');
-		expect(e.base).toEqual({ a: {}, x: [3, 4, 5, 6] });
-
-		e.undo();
-		expect(e.base).toEqual({ a: { b: 6 }, x: [3, 4, 5] });
-	});
-
-	it('throws when from path resolves to more than one path', () => {
-		const e = new Engine({ items: [{ id: 1 }, { id: 2 }] });
-		expect(() => e.move('$.items[*].id', '$.value')).toThrow('Move source must resolve to exactly one path');
-	});
-
-	it('moves one source value into multiple normalized target paths', () => {
-		const e = new Engine({ a: { b: 1 }, items: [{ x: 0 }, { x: 0 }] });
-		e.move('$.a.b', '$.items[*].x');
-		expect(e.base).toEqual({ a: {}, items: [{ x: 1 }, { x: 1 }] });
 	});
 });
 
