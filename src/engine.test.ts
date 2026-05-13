@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { Engine } from './engine';
+import { DiffOp, Engine } from './engine';
 
 describe('Engine.replace', () => {
 	it('replaces a value in an object', () => {
@@ -508,3 +508,42 @@ describe('Engine.copy', () => {
 	});
 });
 
+describe('Engine.exportChanges', () => {
+	it('exports the list of changes as a JSON Patch array', () => {
+		const e = new Engine({ a: 1, items: ['x', 'y'], copyTargets: { foo: 0, bar: 0} });
+		e.replace('$.a', 2);
+		e.add('$.b', 3);
+		e.move('$.items[0]', '$.items[2]');
+		e.delete('$.items[0]');
+		e.copy('$.a', '$.copyTargets.*');
+		e.revert('$.a');
+
+		expect(e.base).toEqual({ a: 1, b: 3, items: ['x'], copyTargets: { foo: 2, bar: 2 } });
+
+		expect(e.exportChanges()).toEqual([
+			{ op: 'replace', path: "$.a", value: 2 },
+			{ op: 'add', path: "$.b", value: 3 },
+			{ op: 'move', from: "$.items[0]", to: "$.items[2]" },
+			{ op: 'remove', path: "$.items[0]" },
+			{ op: 'copy', from: "$.a", to: "$.copyTargets.*" },
+			{ op: 'revert', path: "$.a" },
+		]);
+	});
+});
+
+describe('Engine.importChanges', () => {
+	it('applies a list of changes in JSON Patch format', () => {
+		const e = new Engine({ a: 6, items: ['a', 'b'], copyTargets: { foo: 100, bar: 100} });
+		const changes = [
+			{ op: 'replace', path: "$.a", value: 2 },
+			{ op: 'add', path: "$.b", value: 3 },
+			{ op: 'move', from: "$.items[0]", to: "$.items[2]" },
+			{ op: 'remove', path: "$.items[0]" },
+			{ op: 'copy', from: "$.a", to: "$.copyTargets.*" },
+			{ op: 'revert', path: "$.a" },
+		] as DiffOp[];
+		e.importChanges(changes);
+
+		expect(e.base).toEqual({ a: 6, b: 3, items: ['a'], copyTargets: { foo: 2, bar: 2 } });
+	});
+});

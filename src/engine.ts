@@ -5,23 +5,31 @@ function isPlainObject(v: JsonValue): v is Record<string, JsonValue> {
 	return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
 
-// An Operation is a reversible action pushed onto the undo stack. It intentionally
-// carries no metadata about what changed — just how to reverse or reapply it.
-// This is different from DiffOp, which describes *what* is different between two
-// snapshots. Operations are about history; DiffOps are about net state.
+export enum OpType {
+	Add = 'add',
+	Replace = 'replace',
+	Remove = 'remove',
+	Move = 'move',
+	Copy = 'copy',
+	Revert = 'revert',
+}
+
+// An Operation is a reversible action pushed onto the undo stack.
 export interface Operation {
-	// TODO: op type + path + value, will allow us to build up a 'op log' for export
 	undo: () => void;
 	redo: () => void;
+	op?: DiffOp;
 }
 
 // A DiffOp describes a single structural difference between two JSON values,
 // expressed as a JSONPath + the relevant values. Unlike Operation, it has no
 // knowledge of history or how to reverse anything — it's purely descriptive.
 export type DiffOp =
-	| { op: 'add'; path: string; value: JsonValue }
-	| { op: 'remove'; path: string; value: JsonValue }
-	| { op: 'replace'; path: string; oldValue: JsonValue; value: JsonValue };
+	| { op: OpType.Add;     path: string; value: JsonValue }
+	| { op: OpType.Replace; path: string; oldValue?: JsonValue; value: JsonValue }
+	| { op: OpType.Remove;  path: string; value?: JsonValue }
+	| { op: OpType.Move | OpType.Copy; from: string; to: string }
+	| { op: OpType.Revert; path: string };
 
 export class Engine<T extends JsonValue = JsonValue> {
 	base: T;
@@ -145,7 +153,8 @@ export class Engine<T extends JsonValue = JsonValue> {
 		};
 
 		doAdd();
-		this.pushOperation({ undo: undoAdd, redo: doAdd });
+		const op = { op: OpType.Add, path: jsonPath, value: valueToInsert as JsonValue } as DiffOp;
+		this.pushOperation({ op, undo: undoAdd, redo: doAdd });
 	}
 
 	replace(jsonPath: string, value: any): void {
@@ -167,7 +176,8 @@ export class Engine<T extends JsonValue = JsonValue> {
 		};
 
 		doReplace();
-		this.pushOperation({ undo: undoReplace, redo: doReplace });
+		const op = { op: OpType.Replace, path: jsonPath, value: valueToSet as JsonValue } as DiffOp;
+		this.pushOperation({ op, undo: undoReplace, redo: doReplace });
 	}
 
 	delete(jsonPath: string): void {
@@ -190,7 +200,8 @@ export class Engine<T extends JsonValue = JsonValue> {
 		};
 
 		doDelete();
-		this.pushOperation({ undo: undoDelete, redo: doDelete });
+		const op = { op: OpType.Remove, path: jsonPath } as DiffOp;
+		this.pushOperation({ op, undo: undoDelete, redo: doDelete });
 	}
 
 	revert(jsonPath: string): void {
@@ -226,7 +237,8 @@ export class Engine<T extends JsonValue = JsonValue> {
 		};
 
 		doRevert();
-		this.pushOperation({ undo: undoRevert, redo: doRevert });
+		const op = { op: OpType.Revert, path: jsonPath } as DiffOp;
+		this.pushOperation({ op, undo: undoRevert, redo: doRevert });
 	}
 
 	// Returns the net difference between the original base (at construction) and
@@ -255,7 +267,7 @@ export class Engine<T extends JsonValue = JsonValue> {
 		// get target paths, along with if they already exist + current value
 		const normalizedToPaths = this.jsonPathToNormalizedPaths(to);
 		const toPaths = normalizedToPaths.length === 0
-			? to.includes('*')
+			? to.includes('*') // TODO: better validation of of unknown paths
 				? (() => { throw new Error(`Invalid JSONPath: ${to}`); })()
 				: [to]
 			: normalizedToPaths;
@@ -315,7 +327,8 @@ export class Engine<T extends JsonValue = JsonValue> {
 		};
 
 		doOperation();
-		this.pushOperation({ undo: undoOperation, redo: doOperation });
+		const op = { op: isMove ? OpType.Move : OpType.Copy, from, to } as DiffOp;
+		this.pushOperation({ op, undo: undoOperation, redo: doOperation });
 	}
 
 	move(from: string, to: string): void {
@@ -324,6 +337,45 @@ export class Engine<T extends JsonValue = JsonValue> {
 
 	copy(from: string, to: string): void {
 		this.moveOrCopy(from, to, false);
+	}
+
+	exportChanges(): DiffOp[] {
+		return this.undoStack.map(op => op.op).filter(op => op !== undefined);
+	}
+
+	importChanges(ops: DiffOp[]): void {
+		let progress = 0;
+		try {
+			for (const op of ops) {
+				switch (op.op) {
+					case OpType.Add:
+						this.add(op.path, op.value);
+						break;
+					case OpType.Replace:
+						this.replace(op.path, op.value);
+						break;
+					case OpType.Remove:
+						this.delete(op.path);
+						break;
+					case OpType.Move:
+						this.move(op.from, op.to);
+						break;
+					case OpType.Copy:
+						this.copy(op.from, op.to);
+						break;
+					case OpType.Revert:
+						this.revert(op.path);
+						break;
+					default:
+						console.warn(`Unknown operation type: ${(op as any).op}`);
+				}
+			}
+		} catch (e) {
+			for (let i = 0; i < progress; i++) {
+				this.undo();
+			}
+			throw new Error(`Failed to import changes at operation index ${progress}: ${(e as Error).message}`, { cause: e});
+		}
 	}
 
 	// Recursively walks two JSON values in parallel, building up a flat list of
@@ -342,8 +394,8 @@ export class Engine<T extends JsonValue = JsonValue> {
 			const maxLen = Math.max(a.length, b.length);
 			for (let i = 0; i < maxLen; i++) {
 				const child = `${path}[${i}]`;
-				if (i >= a.length) ops.push({ op: 'add', path: child, value: b[i] });
-				else if (i >= b.length) ops.push({ op: 'remove', path: child, value: a[i] });
+				if (i >= a.length) ops.push({ op: OpType.Add, path: child, value: b[i] });
+				else if (i >= b.length) ops.push({ op: OpType.Remove, path: child, value: a[i] });
 				else this.diffNode(a[i], b[i], child, ops);
 			}
 		} else if (isPlainObject(a) && isPlainObject(b)) {
@@ -352,14 +404,14 @@ export class Engine<T extends JsonValue = JsonValue> {
 			const allKeys = new Set([...Object.keys(ao), ...Object.keys(bo)]);
 			for (const key of allKeys) {
 				const child = `${path}['${key}']`;
-				if (!(key in ao)) ops.push({ op: 'add', path: child, value: bo[key] });
-				else if (!(key in bo)) ops.push({ op: 'remove', path: child, value: ao[key] });
+				if (!(key in ao)) ops.push({ op: OpType.Add, path: child, value: bo[key] });
+				else if (!(key in bo)) ops.push({ op: OpType.Remove, path: child, value: ao[key] });
 				else this.diffNode(ao[key], bo[key], child, ops);
 			}
 		} else if (a !== b) {
 			// Covers: same-type primitives with different values, and type changes
 			// (e.g. object → array). In both cases there's nothing to recurse into.
-			ops.push({ op: 'replace', path, oldValue: a, value: b });
+			ops.push({ op: OpType.Replace, path, oldValue: a, value: b });
 		}
 	}
 
@@ -478,7 +530,8 @@ export class Engine<T extends JsonValue = JsonValue> {
 		};
 
 		doUpsert();
-		this.pushOperation({ undo: undoUpsert, redo: doUpsert });
+		const op = { op: OpType.Add, path: '$.' + segments.join('.'), value: valueToSet as JsonValue } as DiffOp;
+		this.pushOperation({ op, undo: undoUpsert, redo: doUpsert });
 	}
 
 	// Finds the deepest existing prefix of `segments` — the point upsertAt
@@ -557,7 +610,6 @@ engine.move('$.a.b[1]', '$.a.c');
 console.log(engine.base);
 engine.copy('$.a.c', '$.a.b[*]');
 console.log(engine.base);
-engine.undo();
-console.log(engine.base);
-engine.undo();
-console.log(engine.base);
+
+console.log(engine.diff());
+console.log(engine.exportChanges());
