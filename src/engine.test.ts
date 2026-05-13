@@ -255,6 +255,42 @@ describe('Engine.diff', () => {
 	});
 });
 
+describe('Engine.revert', () => {
+	it('reverts a replaced value back to original', () => {
+		const e = new Engine({ a: 1 });
+		e.replace('$.a', 99);
+		expect(e.base).toEqual({ a: 99 });
+		e.revert('$.a');
+		expect(e.base).toEqual({ a: 1 });
+		e.undo(); // Undo the revert!
+		expect(e.base).toEqual({ a: 99 });
+	});
+
+	it('reverts an added value by deleting it', () => {
+		const e = new Engine<any>({ a: 1 });
+		e.add('$.b', 2);
+		expect(e.base).toEqual({ a: 1, b: 2 });
+		e.revert('$.b');
+		expect(e.base).toEqual({ a: 1 });
+	});
+
+	it('reverts a deleted value by restoring it', () => {
+		const e = new Engine<any>({ a: 1, b: 2 });
+		e.delete('$.b');
+		expect(e.base).toEqual({ a: 1 });
+		e.revert('$.b');
+		expect(e.base).toEqual({ a: 1, b: 2 });
+	});
+
+	it('handles wildcard reverts', () => {
+		const e = new Engine({ items: [1, 2, 3] });
+		e.replace('$.items[*]', 0);
+		expect(e.base).toEqual({ items: [0, 0, 0] });
+		e.revert('$.items[*]');
+		expect(e.base).toEqual({ items: [1, 2, 3] });
+	});
+});
+
 describe('Engine.accept', () => {
 	it('does not change base', () => {
 		const e = new Engine({ a: 1 });
@@ -397,7 +433,7 @@ describe('Engine.move', () => {
 	});
 
 	it('throws when moving a path into one of its own descendants', () => {
-		const e = new Engine({ a: { b: { c: 1 } } } );
+		const e = new Engine({ a: { b: { c: 1 } } });
 		expect(() => e.move('$.a.b', '$.a.b.c.d')).toThrow('Invalid move target: cannot move a path into one of its own descendants');
 	});
 });
@@ -463,12 +499,12 @@ describe('Engine.copy', () => {
 	});
 
 	it('allows copying a path into one of its own descendants', () => {
-		const e = new Engine({ a: { b: { c: 1 } } } );
+		const e = new Engine({ a: { b: { c: 1 } } });
 		e.copy('$.a.b', '$.a.b.x');
-		expect(e.base).toEqual({ a: { b: { c: 1, x: { c: 1 } } } } );
-		
+		expect(e.base).toEqual({ a: { b: { c: 1, x: { c: 1 } } } });
+
 		e.undo();
-		expect(e.base).toEqual({ a: { b: { c: 1 } } } );
+		expect(e.base).toEqual({ a: { b: { c: 1 } } });
 	});
 });
 
