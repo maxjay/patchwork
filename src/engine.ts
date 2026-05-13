@@ -9,7 +9,20 @@ export class Engine<T extends JsonValue = JsonValue> {
 	}
 
 	add(jsonPath: string, value: any): void {
+		// const segments = this.segmentsFrom(jsonPath);
 		const normalizedPaths = this.jsonPathToNormalizedPaths(jsonPath);
+		if (normalizedPaths.length === 0) {
+			// treat as literal path to create if no matches
+			// if the jsonPath contains any query selectors, throw an error
+			// TODO - support this better
+			if (jsonPath.includes('*')) {
+				throw new Error(`Invalid JSONPath: ${jsonPath}`);
+			}
+			// e.g. 'a.b.c.d' creates { a: { b: { c: { d: value }}}}
+			this.setAt(this.segmentsFrom(jsonPath), value);
+			return;
+		}
+		console.log('Normalized paths:', normalizedPaths);
 		// Reverse to preserve array indices when inserting at multiple positions
 		for (let i = normalizedPaths.length - 1; i >= 0; i--) {
 			const segments = this.segmentsFrom(normalizedPaths[i]);
@@ -60,11 +73,37 @@ export class Engine<T extends JsonValue = JsonValue> {
 	}
 
 
-	private setAt(segments: (string | number)[], value: any): void {
-		if (segments.length === 0) { this.base = value as T; return; }
+	private setAt(segments: any[], value: any): void {
+		// basically, for every segment except the last, we try to access the next level.
+		// if it doesn't exist, we create an object or array depending on the next segment type.
+		// so for example, if we have segments ['a', 'b', 'c', 0, 'd'], we first check if base['a'] exists.
+		// If not, we create it as an object (since the next segment is 'b').
+		// Given that we've had to create b, we don't need to check to see if the rest exist as we know they don't
+		// so we can just create them all in one go.
+		// So C is created as an array since the next segment is an index
+		// And then at that index we create the object 
+		console.log(segments);
 		let current: any = this.base;
-		for (let i = 0; i < segments.length - 1; i++) current = current[segments[i]];
-		current[segments[segments.length - 1]] = value;
+		for (let i = 0; i < segments.length - 1; i++) {
+			const segment = segments[i];
+			const nextSegment = segments[i + 1];
+
+			const next = current[segment];
+
+			const canGoNext =
+				next !== undefined &&
+				next !== null &&
+				typeof next === 'object';
+
+			if (!canGoNext) {
+				current[segment] = typeof nextSegment === 'number' ? [] : {};
+			}
+
+			current = current[segment];
+		}
+
+		const finalSegment = segments[segments.length - 1];
+		current[finalSegment] = value;
 	}
 
 	// add semantics: splices into arrays, sets on objects
@@ -101,4 +140,11 @@ export class Engine<T extends JsonValue = JsonValue> {
 
 // Test
 const engine = new Engine({ a: {b: 3} });
-engine.add('$.a.b', 5);
+engine.add('$.a.b.c[0].d', 5);
+console.log(engine.base);
+console.log(engine.base.a.b.c[0].d);
+engine.add('$.a.b', 3);
+console.log(engine.base);
+engine.add('$.a.b', []);
+engine.add('$.a.b[0]', 1);
+console.log(engine.base);
