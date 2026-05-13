@@ -97,3 +97,65 @@ describe('Engine.delete', () => {
 		expect(e.base).toEqual({ a: 1 });
 	});
 });
+
+describe('Engine.diff', () => {
+	it('returns empty array when nothing has changed', () => {
+		const e = new Engine({ a: 1 });
+		expect(e.diff()).toEqual([]);
+	});
+
+	it('detects a replaced scalar', () => {
+		const e = new Engine({ a: 1 });
+		e.replace('$.a', 2);
+		expect(e.diff()).toEqual([
+			{ op: 'replace', path: "$['a']", oldValue: 1, value: 2 },
+		]);
+	});
+
+	it('detects an added key', () => {
+		const e = new Engine<any>({ a: 1 });
+		e.add('$.b', 2);
+		expect(e.diff()).toEqual([
+			{ op: 'add', path: "$['b']", value: 2 },
+		]);
+	});
+
+	it('detects a deleted key', () => {
+		const e = new Engine<any>({ a: 1, b: 2 });
+		e.delete('$.b');
+		expect(e.diff()).toEqual([
+			{ op: 'remove', path: "$['b']", value: 2 },
+		]);
+	});
+
+	it('recurses into nested objects', () => {
+		const e = new Engine({ a: { b: 1 } });
+		e.replace('$.a.b', 2);
+		expect(e.diff()).toEqual([
+			{ op: 'replace', path: "$['a']['b']", oldValue: 1, value: 2 },
+		]);
+	});
+
+	it('detects an added array element', () => {
+		const e = new Engine({ x: [1, 2] });
+		e.add('$.x[2]', 3);
+		expect(e.diff()).toEqual([
+			{ op: 'add', path: "$['x'][2]", value: 3 },
+		]);
+	});
+
+	it('detects a removed array element', () => {
+		const e = new Engine({ x: [1, 2, 3] });
+		e.delete('$.x[2]');
+		expect(e.diff()).toEqual([
+			{ op: 'remove', path: "$['x'][2]", value: 3 },
+		]);
+	});
+
+	it('reflects the original snapshot even after undo', () => {
+		const e = new Engine({ a: 1 });
+		e.add('$.a', 99);
+		e.undo();
+		expect(e.diff()).toEqual([]);
+	});
+});
