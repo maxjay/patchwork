@@ -1,4 +1,5 @@
 import { paths, type JsonValue } from 'jsonpath-rfc9535';
+import parse from 'jsonpath-rfc9535/parser';
 
 export class Engine<T extends JsonValue = JsonValue> {
 	base: T;
@@ -8,6 +9,13 @@ export class Engine<T extends JsonValue = JsonValue> {
 	}
 
 	add(jsonPath: string, value: any): void {
+		const normalizedPaths = this.jsonPathToNormalizedPaths(jsonPath);
+		for (const normalizedPath of normalizedPaths) {
+			const ast = parse(normalizedPath);
+			for (const segment of ast.segments) {
+				console.log(segment.node);
+			}
+		}
 	}
 
 	replace(jsonPath: string, value: any): void {
@@ -28,3 +36,7 @@ export class Engine<T extends JsonValue = JsonValue> {
 		return paths(this.base, jsonPath);
 	}	
 }
+
+// Test
+const engine = new Engine({ a: {b: 3} });
+engine.add('$.a.b', 5);
