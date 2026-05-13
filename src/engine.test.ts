@@ -71,11 +71,19 @@ describe('Engine.delete', () => {
 		const e = new Engine<any>({ a: 1, b: 2 });
 		e.delete('$.a');
 		expect(e.base).toEqual({ b: 2 });
+		e.undo();
+		expect(e.base).toEqual({ a: 1, b: 2 });
+		e.redo();
+		expect(e.base).toEqual({ b: 2 });
 	});
 
 	it('removes an element from an array', () => {
 		const e = new Engine({ items: ['a', 'b', 'c'] });
 		e.delete('$.items[1]');
+		expect(e.base).toEqual({ items: ['a', 'c'] });
+		e.undo();
+		expect(e.base).toEqual({ items: ['a', 'b', 'c'] });
+		e.redo();
 		expect(e.base).toEqual({ items: ['a', 'c'] });
 	});
 
@@ -83,17 +91,30 @@ describe('Engine.delete', () => {
 		const e = new Engine({ items: ['a', 'b', 'c'] });
 		e.delete('$.items[*]');
 		expect(e.base).toEqual({ items: [] });
+		e.undo();
+		expect(e.base).toEqual({ items: ['a', 'b', 'c'] });
+		e.redo();
+		expect(e.base).toEqual({ items: [] });
 	});
 
 	it('removes a nested key', () => {
 		const e = new Engine<any>({ a: { b: 1, c: 2 } });
 		e.delete('$.a.b');
 		expect(e.base).toEqual({ a: { c: 2 } });
+		e.undo();
+		expect(e.base).toEqual({ a: { b: 1, c: 2 } });
+		e.redo();
+		expect(e.base).toEqual({ a: { c: 2 } });
 	});
 
 	it('does nothing when the path matches nothing', () => {
 		const e = new Engine({ a: 1 });
 		e.delete('$.z');
+		expect(e.base).toEqual({ a: 1 });
+		e.undo();
+		// State shouldn't change if nothing was deleted
+		expect(e.base).toEqual({ a: 1 });
+		e.redo();
 		expect(e.base).toEqual({ a: 1 });
 	});
 });

@@ -107,10 +107,25 @@ export class Engine<T extends JsonValue = JsonValue> {
 
 	delete(jsonPath: string): void {
 		const normalizedPaths = this.jsonPathToNormalizedPaths(jsonPath);
-		// Reverse to preserve array indices when removing multiple elements
-		for (let i = normalizedPaths.length - 1; i >= 0; i--) {
-			this.removeAt(this.segmentsFrom(normalizedPaths[i]));
-		}
+		const segmentsList = normalizedPaths.map(np => this.segmentsFrom(np));
+		const oldValues = segmentsList.map(seg => structuredClone(this.getAt(seg)));
+
+		const doDelete = () => {
+			// Reverse to preserve array indices when removing multiple elements
+			for (let i = segmentsList.length - 1; i >= 0; i--) {
+				this.removeAt(segmentsList[i]);
+			}
+		};
+
+		const undoDelete = () => {
+			// Forward order to preserve array indices when restoring multiple elements
+			for (let i = 0; i < segmentsList.length; i++) {
+				this.insertAt(segmentsList[i], structuredClone(oldValues[i]));
+			}
+		};
+
+		doDelete();
+		this.pushOperation({ undo: undoDelete, redo: doDelete });
 	}
 
 	move(from: string, to: string): void {
