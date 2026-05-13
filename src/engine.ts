@@ -1,22 +1,30 @@
-export class Engine<T = any> {
-  base: T;
+import { paths, type JsonValue } from 'jsonpath-rfc9535';
 
-  constructor(base: T) {
-    this.base = base;
-  }
+export class Engine<T extends JsonValue = JsonValue> {
+	base: T;
 
-  add(path: string, value: any): void {
-  }
+	constructor(base: T) {
+		this.base = base;
+	}
 
-  replace(path: string, value: any): void {
-  }
+	add(jsonPath: string, value: any): void {
+	}
 
-  delete(path: string): void {
-  }
+	replace(jsonPath: string, value: any): void {
+	}
 
-  move(from: string, to: string): void {
-  }
+	delete(jsonPath: string): void {
+	}
 
-  copy(from: string, to: string): void {
-  }
+	move(from: string, to: string): void {
+	}
+
+	copy(from: string, to: string): void {
+	}
+
+	// jsonPath is a query selector, not a JSON Pointer. We need to convert it to a JSON Pointer before we can use it.
+	// '$.store.book[*].author'; as an example
+	private jsonPathToNormalizedPaths(jsonPath: string): string[] {
+		return paths(this.base, jsonPath);
+	}	
 }
