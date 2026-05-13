@@ -39,6 +39,13 @@ export class Engine<T extends JsonValue = JsonValue> {
 	private undoStack: Operation[] = [];
 	private redoStack: Operation[] = [];
 
+	// Ordered list of explicitly accepted snapshots. accept() appends here;
+	// decline() reads the last entry to revert base. Kept separate from the undo
+	// stack so decline() can find the last checkpoint in O(1) without inspecting
+	// the stack contents. Undo/redo of accept and decline mutate this list too,
+	// so it stays consistent with the rest of the history.
+	private checkpoints: T[] = [];
+
 	constructor(base: T) {
 		this.original = structuredClone(base);
 		this.base = base;
@@ -63,6 +70,36 @@ export class Engine<T extends JsonValue = JsonValue> {
 			op.redo();
 			this.undoStack.push(op);
 		}
+	}
+
+	// Snapshots the current draft as a checkpoint without touching base.
+	// Undo removes the checkpoint; redo re-adds it.
+	accept(): void {
+		const snapshot = structuredClone(this.base);
+		this.checkpoints.push(snapshot);
+		this.pushOperation({
+			undo: () => { this.checkpoints.pop(); },
+			redo: () => { this.checkpoints.push(structuredClone(snapshot)); },
+		});
+	}
+
+	// Reverts base to the most recent checkpoint, or to original if none exist.
+	// The individual-op undo/redo stacks are left intact so that undoing this
+	// decline restores the full draft history too.
+	decline(): void {
+		if (this.checkpoints.length === 0 && this.base === this.original) {
+			// no-op
+			return;
+		}
+		const target = this.checkpoints.length > 0
+			? this.checkpoints[this.checkpoints.length - 1]
+			: this.original;
+		const previousDraft = structuredClone(this.base);
+		this.base = structuredClone(target);
+		this.pushOperation({
+			undo: () => { this.base = previousDraft; },
+			redo: () => { this.base = structuredClone(target); },
+		});
 	}
 
 	add(jsonPath: string, value: any): void {
