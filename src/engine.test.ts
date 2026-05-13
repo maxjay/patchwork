@@ -66,6 +66,73 @@ describe('Engine.add', () => {
 	});
 });
 
+describe('Engine.add (creates missing intermediates)', () => {
+	it('creates a missing nested object key', () => {
+		const e = new Engine<any>({});
+		e.add('$.a.b', 1);
+		expect(e.base).toEqual({ a: { b: 1 } });
+		e.undo();
+		expect(e.base).toEqual({});
+		e.redo();
+		expect(e.base).toEqual({ a: { b: 1 } });
+	});
+
+	it('creates several missing intermediates in one shot', () => {
+		const e = new Engine<any>({});
+		e.add('$.a.b.c.d', 5);
+		expect(e.base).toEqual({ a: { b: { c: { d: 5 } } } });
+		e.undo();
+		expect(e.base).toEqual({});
+	});
+
+	it('creates an array when the next segment is an index', () => {
+		const e = new Engine<any>({});
+		e.add('$.a[0].b', 1);
+		expect(e.base).toEqual({ a: [{ b: 1 }] });
+		e.undo();
+		expect(e.base).toEqual({});
+	});
+
+	it('mixes existing prefix with fabricated tail', () => {
+		const e = new Engine<any>({ a: { b: 3 } });
+		e.add('$.a.b.c[0].d', 5);
+		expect(e.base).toEqual({ a: { b: { c: [{ d: 5 }] } } });
+	});
+
+	it('undo restores at the divergence point, not the leaf', () => {
+		// `b` is a scalar that gets overwritten with an object to make room for c.
+		// Undo must put `b` back to 3, not try to surgically remove `c`.
+		const e = new Engine<any>({ a: { b: 3 } });
+		e.add('$.a.b.c', 5);
+		expect(e.base).toEqual({ a: { b: { c: 5 } } });
+		e.undo();
+		expect(e.base).toEqual({ a: { b: 3 } });
+		e.redo();
+		expect(e.base).toEqual({ a: { b: { c: 5 } } });
+	});
+
+	it('undo removes the top-level key when the whole prefix was fabricated', () => {
+		const e = new Engine<any>({ x: 1 });
+		e.add('$.a.b.c', 5);
+		expect(e.base).toEqual({ x: 1, a: { b: { c: 5 } } });
+		e.undo();
+		expect(e.base).toEqual({ x: 1 });
+	});
+
+	it('throws when a non-resolving path contains a wildcard', () => {
+		const e = new Engine<any>({});
+		expect(() => e.add('$.a.*', 1)).toThrow();
+	});
+
+	it('diff reflects the fabricated subtree as a single add', () => {
+		const e = new Engine<any>({});
+		e.add('$.a.b', 1);
+		expect(e.diff()).toEqual([
+			{ op: 'add', path: "$['a']", value: { b: 1 } },
+		]);
+	});
+});
+
 describe('Engine.delete', () => {
 	it('removes a key from an object', () => {
 		const e = new Engine<any>({ a: 1, b: 2 });

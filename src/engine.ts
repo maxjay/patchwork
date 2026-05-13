@@ -75,7 +75,7 @@ export class Engine<T extends JsonValue = JsonValue> {
 				throw new Error(`Invalid JSONPath: ${jsonPath}`);
 			}
 			// e.g. 'a.b.c.d' creates { a: { b: { c: { d: value }}}}
-			this.setAt(this.segmentsFrom(jsonPath), value);
+			this.upsertAt(this.segmentsFrom(jsonPath), value);
 			return;
 		}
 		const segmentsList = normalizedPaths.map(np => this.segmentsFrom(np));
@@ -273,6 +273,58 @@ export class Engine<T extends JsonValue = JsonValue> {
 
 		const finalSegment = segments[segments.length - 1];
 		current[finalSegment] = value;
+	}
+
+	// Sets `value` at `segments`, fabricating any missing intermediate
+	// objects/arrays via setAt, and pushes an Operation that reverses it.
+	//
+	// The reverse target is the deepest *existing* point on the path, not
+	// the leaf — if we had to invent `c.d` to write `a.b.c.d`, undo restores
+	// what was at `a.b` (overwriting the fabricated subtree wholesale) rather
+	// than trying to surgically remove just the leaf.
+	private upsertAt(segments: (string | number)[], value: any): void {
+		const restore = this.findRestorePoint(segments);
+		const valueToSet = structuredClone(value);
+
+		const doUpsert = () => {
+			this.setAt(segments, structuredClone(valueToSet));
+		};
+
+		const undoUpsert = () => {
+			if (restore.existed) this.setAt(restore.segments, structuredClone(restore.oldValue));
+			else this.removeAt(restore.segments);
+		};
+
+		doUpsert();
+		this.pushOperation({ undo: undoUpsert, redo: doUpsert });
+	}
+
+	// Finds the deepest existing prefix of `segments` — the point upsertAt
+	// needs to snapshot, because anything past it will be fabricated by setAt.
+	private findRestorePoint(segments: (string | number)[]): {
+		segments: (string | number)[];
+		existed: boolean;
+		oldValue: any;
+	} {
+		if (segments.length === 0) {
+			return { segments, existed: true, oldValue: structuredClone(this.base) };
+		}
+		let current: any = this.base;
+		let stopAt = segments.length - 1; // default: all intermediates exist, restore at the leaf
+		for (let i = 0; i < segments.length - 1; i++) {
+			const next = current[segments[i]];
+			if (next === null || typeof next !== 'object') {
+				stopAt = i;
+				break;
+			}
+			current = next;
+		}
+		const key = segments[stopAt];
+		return {
+			segments: segments.slice(0, stopAt + 1),
+			existed: Object.prototype.hasOwnProperty.call(current, key),
+			oldValue: structuredClone(current[key]),
+		};
 	}
 
 	// add semantics: splices into arrays, sets on objects
