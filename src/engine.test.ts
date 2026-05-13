@@ -247,3 +247,198 @@ describe('Engine.diff', () => {
 		expect(e.diff()).toEqual([]);
 	});
 });
+
+describe('Engine.move', () => {
+	it('moves a value from one path to another', () => {
+		const e = new Engine<any>({ a: { b: 3 }, x: 0 });
+		e.move('$.a.b', '$.x');
+		expect(e.base).toEqual({ a: {}, x: 3 });
+
+		e.undo();
+		expect(e.base).toEqual({ a: { b: 3 }, x: 0 });
+	});
+
+	it('moves an object from one path to another', () => {
+		const e = new Engine<any>({ a: { b: { foo: 'bar' } }, x: 0 });
+		e.move('$.a.b', '$.x');
+		expect(e.base).toEqual({ a: {}, x: { foo: 'bar' } });
+
+		e.undo();
+		expect(e.base).toEqual({ a: { b: { foo: 'bar' } }, x: 0 });
+	});
+
+	it('moves an array element from one path to another', () => {
+		const e = new Engine<any>({ a: { b: [3, 4, 5] }, x: 0 });
+		e.move('$.a.b[1]', '$.x');
+		expect(e.base).toEqual({ a: { b: [3, 5] }, x: 4 });
+
+		e.undo();
+		expect(e.base).toEqual({ a: { b: [3, 4, 5] }, x: 0 });
+	});
+
+	it('moves an array from one path to another', () => {
+		const e = new Engine<any>({ a: { b: [3, 4, 5] }, x: 0 });
+		e.move('$.a.b', '$.x');
+		expect(e.base).toEqual({ a: {}, x: [3, 4, 5] });
+
+		e.undo();
+		expect(e.base).toEqual({ a: { b: [3, 4, 5] }, x: 0 });
+	});
+
+	it('moves item to end of an array', () => {
+		const e = new Engine<any>({ a: { b: 6 }, x: [3, 4, 5] });
+		e.move('$.a.b', '$.x[3]');
+		expect(e.base).toEqual({ a: {}, x: [3, 4, 5, 6] });
+
+		e.undo();
+		expect(e.base).toEqual({ a: { b: 6 }, x: [3, 4, 5] });
+	});
+
+	it('throws when from path resolves to more than one path', () => {
+		const e = new Engine({ items: [{ id: 1 }, { id: 2 }] });
+		expect(() => e.move('$.items[*].id', '$.value')).toThrow('Move source must resolve to exactly one path');
+	});
+
+	it('moves one source value into multiple normalized target paths', () => {
+		const e = new Engine({ a: { b: 1 }, items: [{ x: 0 }, { x: 0 }] });
+		e.move('$.a.b', '$.items[*].x');
+		expect(e.base).toEqual({ a: {}, items: [{ x: 1 }, { x: 1 }] });
+	});
+});
+
+describe('Engine.move', () => {
+	it('moves a value from one path to another', () => {
+		const e = new Engine<any>({ a: { b: 3 }, x: 0 });
+		e.move('$.a.b', '$.x');
+		expect(e.base).toEqual({ a: {}, x: 3 });
+
+		e.undo();
+		expect(e.base).toEqual({ a: { b: 3 }, x: 0 });
+	});
+
+	it('moves an object from one path to another', () => {
+		const e = new Engine<any>({ a: { b: { foo: 'bar' } }, x: 0 });
+		e.move('$.a.b', '$.x');
+		expect(e.base).toEqual({ a: {}, x: { foo: 'bar' } });
+
+		e.undo();
+		expect(e.base).toEqual({ a: { b: { foo: 'bar' } }, x: 0 });
+	});
+
+	it('moves an array element from one path to another', () => {
+		const e = new Engine<any>({ a: { b: [3, 4, 5] }, x: 0 });
+		e.move('$.a.b[1]', '$.x');
+		expect(e.base).toEqual({ a: { b: [3, 5] }, x: 4 });
+
+		e.undo();
+		expect(e.base).toEqual({ a: { b: [3, 4, 5] }, x: 0 });
+	});
+
+	it('moves an array from one path to another', () => {
+		const e = new Engine<any>({ a: { b: [3, 4, 5] }, x: 0 });
+		e.move('$.a.b', '$.x');
+		expect(e.base).toEqual({ a: {}, x: [3, 4, 5] });
+
+		e.undo();
+		expect(e.base).toEqual({ a: { b: [3, 4, 5] }, x: 0 });
+	});
+
+	it('moves item to end of an array', () => {
+		const e = new Engine<any>({ a: { b: 6 }, x: [3, 4, 5] });
+		e.move('$.a.b', '$.x[3]');
+		expect(e.base).toEqual({ a: {}, x: [3, 4, 5, 6] });
+
+		e.undo();
+		expect(e.base).toEqual({ a: { b: 6 }, x: [3, 4, 5] });
+	});
+
+	it('moves one source value into multiple normalized target paths', () => {
+		const e = new Engine({ a: { b: 1 }, items: [{ x: 0 }, { x: 0 }] });
+		e.move('$.a.b', '$.items[*].x');
+		expect(e.base).toEqual({ a: {}, items: [{ x: 1 }, { x: 1 }] });
+
+		e.undo();
+		expect(e.base).toEqual({ a: { b: 1 }, items: [{ x: 0 }, { x: 0 }] });
+	});
+
+	it('throws when from path resolves to more than one path', () => {
+		const e = new Engine({ items: [{ id: 1 }, { id: 2 }] });
+		expect(() => e.move('$.items[*].id', '$.value')).toThrow('Move source must resolve to exactly one path');
+	});
+
+	it('throws when moving a path into one of its own descendants', () => {
+		const e = new Engine({ a: { b: { c: 1 } } } );
+		expect(() => e.move('$.a.b', '$.a.b.c.d')).toThrow('Invalid move target: cannot move a path into one of its own descendants');
+	});
+});
+
+describe('Engine.copy', () => {
+	it('copies a value from one path to another', () => {
+		const e = new Engine<any>({ a: { b: 3 }, x: 0 });
+		e.copy('$.a.b', '$.x');
+		expect(e.base).toEqual({ a: { b: 3 }, x: 3 });
+
+		e.undo();
+		expect(e.base).toEqual({ a: { b: 3 }, x: 0 });
+	});
+
+	it('copies an object from one path to another', () => {
+		const e = new Engine<any>({ a: { b: { foo: 'bar' } }, x: 0 });
+		e.copy('$.a.b', '$.x');
+		expect(e.base).toEqual({ a: { b: { foo: 'bar' } }, x: { foo: 'bar' } });
+
+		e.undo();
+		expect(e.base).toEqual({ a: { b: { foo: 'bar' } }, x: 0 });
+	});
+
+	it('copies an array element from one path to another', () => {
+		const e = new Engine<any>({ a: { b: [3, 4, 5] }, x: 0 });
+		e.copy('$.a.b[1]', '$.x');
+		expect(e.base).toEqual({ a: { b: [3, 4, 5] }, x: 4 });
+
+		e.undo();
+		expect(e.base).toEqual({ a: { b: [3, 4, 5] }, x: 0 });
+	});
+
+	it('copies an array from one path to another', () => {
+		const e = new Engine<any>({ a: { b: [3, 4, 5] }, x: 0 });
+		e.copy('$.a.b', '$.x');
+		expect(e.base).toEqual({ a: { b: [3, 4, 5] }, x: [3, 4, 5] });
+
+		e.undo();
+		expect(e.base).toEqual({ a: { b: [3, 4, 5] }, x: 0 });
+	});
+
+	it('copies item to end of an array', () => {
+		const e = new Engine<any>({ a: { b: 6 }, x: [3, 4, 5] });
+		e.copy('$.a.b', '$.x[3]');
+		expect(e.base).toEqual({ a: { b: 6 }, x: [3, 4, 5, 6] });
+
+		e.undo();
+		expect(e.base).toEqual({ a: { b: 6 }, x: [3, 4, 5] });
+	});
+
+	it('copies one source value into multiple normalized target paths', () => {
+		const e = new Engine({ a: { b: 1 }, items: [{ x: 0 }, { x: 0 }] });
+		e.copy('$.a.b', '$.items[*].x');
+		expect(e.base).toEqual({ a: { b: 1 }, items: [{ x: 1 }, { x: 1 }] });
+
+		e.undo();
+		expect(e.base).toEqual({ a: { b: 1 }, items: [{ x: 0 }, { x: 0 }] });
+	});
+
+	it('throws when from path resolves to more than one path', () => {
+		const e = new Engine({ items: [{ id: 1 }, { id: 2 }] });
+		expect(() => e.copy('$.items[*].id', '$.value')).toThrow('Copy source must resolve to exactly one path');
+	});
+
+	it('allows copying a path into one of its own descendants', () => {
+		const e = new Engine({ a: { b: { c: 1 } } } );
+		e.copy('$.a.b', '$.a.b.x');
+		expect(e.base).toEqual({ a: { b: { c: 1, x: { c: 1 } } } } );
+		
+		e.undo();
+		expect(e.base).toEqual({ a: { b: { c: 1 } } } );
+	});
+});
+

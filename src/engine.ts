@@ -10,6 +10,7 @@ function isPlainObject(v: JsonValue): v is Record<string, JsonValue> {
 // This is different from DiffOp, which describes *what* is different between two
 // snapshots. Operations are about history; DiffOps are about net state.
 export interface Operation {
+	// TODO: op type + path + value, will allow us to build up a 'op log' for export
 	undo: () => void;
 	redo: () => void;
 }
@@ -170,10 +171,87 @@ export class Engine<T extends JsonValue = JsonValue> {
 		return ops;
 	}
 
+	private moveOrCopy(from: string, to: string, isMove: boolean): void {
+		// get single source path + value
+		const normalizedFromPaths = this.jsonPathToNormalizedPaths(from);
+		if (normalizedFromPaths.length !== 1) {
+			throw new Error(`${isMove ? 'Move' : 'Copy'} source must resolve to exactly one path, got ${normalizedFromPaths.length}`);
+		}
+		const fromSegments = this.segmentsFrom(normalizedFromPaths[0]);
+		const sourceValue = structuredClone(this.getAt(fromSegments));
+
+		// get target paths, along with if they already exist + current value
+		const normalizedToPaths = this.jsonPathToNormalizedPaths(to);
+		const toPaths = normalizedToPaths.length === 0
+			? to.includes('*')
+				? (() => { throw new Error(`Invalid JSONPath: ${to}`); })()
+				: [to]
+			: normalizedToPaths;
+		const targetMeta = toPaths.map(path => {
+			const segments = this.segmentsFrom(path);
+			const exists = normalizedToPaths.length > 0;
+			return {
+				segments,
+				exists,
+				oldValue: exists ? structuredClone(this.getAt(segments)) : undefined,
+			};
+		});
+
+		// check operation isn't against itself
+		const isSelfOperation = targetMeta.length === 1 && this.isSegmentsEqual(targetMeta[0].segments, fromSegments);
+		if (isSelfOperation && isMove) {
+			// no-op	
+			return;
+		}
+		if (isMove && targetMeta.some(target => target.segments.length > fromSegments.length &&
+			this.isSegmentsEqual(target.segments.slice(0, fromSegments.length), fromSegments))) {
+			throw new Error('Invalid move target: cannot move a path into one of its own descendants');
+		}
+
+		// check if we're removing from an array (for undo to know whether to insert or set)
+		let isArrayRemoval = false;
+		if (isMove) {
+			const container = fromSegments.length === 0 ? this.base : this.getAt(fromSegments.slice(0, -1));
+			isArrayRemoval = Array.isArray(container) && typeof fromSegments[fromSegments.length - 1] === 'number';
+		}
+
+		const doOperation = () => {
+			for (const target of targetMeta) {
+				this.setAt(target.segments, structuredClone(sourceValue));
+			}
+			if (isMove) {
+				this.removeAt(fromSegments);
+			}
+		};
+
+		const undoOperation = () => {
+			for (const target of targetMeta) {
+				if (target.exists) {
+					this.setAt(target.segments, structuredClone(target.oldValue));
+				} else {
+					this.removeAt(target.segments);
+				}
+			}
+			if (isMove) {
+				// if we removed from an array, we need to insert at the original index (not just set) to preserve the array structure and indices
+				if (isArrayRemoval) {
+					this.insertAt(fromSegments, structuredClone(sourceValue));
+				} else {
+					this.setAt(fromSegments, structuredClone(sourceValue));
+				}
+			}
+		};
+
+		doOperation();
+		this.pushOperation({ undo: undoOperation, redo: doOperation });
+	}
+
 	move(from: string, to: string): void {
+		this.moveOrCopy(from, to, true);
 	}
 
 	copy(from: string, to: string): void {
+		this.moveOrCopy(from, to, false);
 	}
 
 	// Recursively walks two JSON values in parallel, building up a flat list of
@@ -239,6 +317,14 @@ export class Engine<T extends JsonValue = JsonValue> {
 		let current: any = this.base;
 		for (let i = 0; i < segments.length - 1; i++) current = current[segments[i]];
 		return current[segments[segments.length - 1]];
+	}
+
+	private isSegmentsEqual(a: (string | number)[], b: (string | number)[]): boolean {
+		if (a.length !== b.length) return false;
+		for (let i = 0; i < a.length; i++) {
+			if (a[i] !== b[i]) return false;
+		}
+		return true;
 	}
 
 	private setAt(segments: any[], value: any): void {
@@ -367,5 +453,15 @@ console.log(engine.base.a.b.c[0].d);
 engine.add('$.a.b', 3);
 console.log(engine.base);
 engine.add('$.a.b', []);
+engine.add('$.a.b[0]', 2);
 engine.add('$.a.b[0]', 1);
+engine.add('$.a.b[0]', 0);
+console.log(engine.base);
+engine.move('$.a.b[1]', '$.a.c');
+console.log(engine.base);
+engine.copy('$.a.c', '$.a.b[*]');
+console.log(engine.base);
+engine.undo();
+console.log(engine.base);
+engine.undo();
 console.log(engine.base);
