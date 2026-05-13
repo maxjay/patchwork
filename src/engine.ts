@@ -1,20 +1,74 @@
 import { paths, type JsonValue } from 'jsonpath-rfc9535';
 import parse from 'jsonpath-rfc9535/parser';
 
+export interface Operation {
+	undo: () => void;
+	redo: () => void;
+}
+
 export class Engine<T extends JsonValue = JsonValue> {
 	base: T;
+	private undoStack: Operation[] = [];
+	private redoStack: Operation[] = [];
 
 	constructor(base: T) {
 		this.base = base;
 	}
 
+	private pushOperation(op: Operation) {
+		this.undoStack.push(op);
+		this.redoStack = [];
+	}
+
+	undo(): void {
+		const op = this.undoStack.pop();
+		if (op) {
+			op.undo();
+			this.redoStack.push(op);
+		}
+	}
+
+	redo(): void {
+		const op = this.redoStack.pop();
+		if (op) {
+			op.redo();
+			this.undoStack.push(op);
+		}
+	}
+
 	add(jsonPath: string, value: any): void {
 		const normalizedPaths = this.jsonPathToNormalizedPaths(jsonPath);
-		// Reverse to preserve array indices when inserting at multiple positions
-		for (let i = normalizedPaths.length - 1; i >= 0; i--) {
-			const segments = this.segmentsFrom(normalizedPaths[i]);
-			this.insertAt(segments, value);
-		}
+		const segmentsList = normalizedPaths.map(np => this.segmentsFrom(np));
+
+		const isArrayInsert = segmentsList.map(seg => {
+			if (seg.length === 0) return false;
+			let current: any = this.base;
+			for (let i = 0; i < seg.length - 1; i++) current = current[seg[i]];
+			return Array.isArray(current) && typeof seg[seg.length - 1] === 'number';
+		});
+
+		const oldValues = segmentsList.map(seg => structuredClone(this.getAt(seg)));
+		const valueToInsert = structuredClone(value);
+
+		const doAdd = () => {
+			// Reverse to preserve array indices when inserting at multiple positions
+			for (let i = segmentsList.length - 1; i >= 0; i--) {
+				this.insertAt(segmentsList[i], structuredClone(valueToInsert));
+			}
+		};
+
+		const undoAdd = () => {
+			for (let i = 0; i < segmentsList.length; i++) {
+				if (isArrayInsert[i]) {
+					this.removeAt(segmentsList[i]);
+				} else {
+					this.setAt(segmentsList[i], structuredClone(oldValues[i]));
+				}
+			}
+		};
+
+		doAdd();
+		this.pushOperation({ undo: undoAdd, redo: doAdd });
 	}
 
 	replace(jsonPath: string, value: any): void {
@@ -59,6 +113,12 @@ export class Engine<T extends JsonValue = JsonValue> {
 		return segments;
 	}
 
+	private getAt(segments: (string | number)[]): any {
+		if (segments.length === 0) return this.base;
+		let current: any = this.base;
+		for (let i = 0; i < segments.length - 1; i++) current = current[segments[i]];
+		return current[segments[segments.length - 1]];
+	}
 
 	private setAt(segments: (string | number)[], value: any): void {
 		if (segments.length === 0) { this.base = value as T; return; }
@@ -100,5 +160,5 @@ export class Engine<T extends JsonValue = JsonValue> {
 }
 
 // Test
-const engine = new Engine({ a: {b: 3} });
+const engine = new Engine({ a: { b: 3 } });
 engine.add('$.a.b', 5);
