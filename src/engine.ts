@@ -85,9 +85,24 @@ export class Engine<T extends JsonValue = JsonValue> {
 
 	replace(jsonPath: string, value: any): void {
 		const normalizedPaths = this.jsonPathToNormalizedPaths(jsonPath);
-		for (const np of normalizedPaths) {
-			this.setAt(this.segmentsFrom(np), value);
-		}
+		const segmentsList = normalizedPaths.map(np => this.segmentsFrom(np));
+		const oldValues = segmentsList.map(seg => structuredClone(this.getAt(seg)));
+		const valueToSet = structuredClone(value);
+
+		const doReplace = () => {
+			for (let i = 0; i < segmentsList.length; i++) {
+				this.setAt(segmentsList[i], structuredClone(valueToSet));
+			}
+		};
+
+		const undoReplace = () => {
+			for (let i = 0; i < segmentsList.length; i++) {
+				this.setAt(segmentsList[i], structuredClone(oldValues[i]));
+			}
+		};
+
+		doReplace();
+		this.pushOperation({ undo: undoReplace, redo: doReplace });
 	}
 
 	delete(jsonPath: string): void {
@@ -133,6 +148,7 @@ export class Engine<T extends JsonValue = JsonValue> {
 	}
 
 	private setAt(segments: any[], value: any): void {
+		if (segments.length === 0) { this.base = value as T; return; }
 		// basically, for every segment except the last, we try to access the next level.
 		// if it doesn't exist, we create an object or array depending on the next segment type.
 		// so for example, if we have segments ['a', 'b', 'c', 0, 'd'], we first check if base['a'] exists.
@@ -198,7 +214,7 @@ export class Engine<T extends JsonValue = JsonValue> {
 }
 
 // Test
-const engine = new Engine({ a: { b: 3 } });
+const engine = new Engine<any>({ a: { b: 3 } });
 engine.add('$.a.b.c[0].d', 5);
 console.log(engine.base);
 console.log(engine.base.a.b.c[0].d);

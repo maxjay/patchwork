@@ -6,17 +6,29 @@ describe('Engine.replace', () => {
 		const e = new Engine({ a: { b: 3 } });
 		e.replace('$.a.b', 99);
 		expect(e.base).toEqual({ a: { b: 99 } });
+		e.undo();
+		expect(e.base).toEqual({ a: { b: 3 } });
+		e.redo();
+		expect(e.base).toEqual({ a: { b: 99 } });
 	});
 
 	it('replaces an element in an array', () => {
 		const e = new Engine({ items: ['a', 'b', 'c'] });
 		e.replace('$.items[1]', 'X');
 		expect(e.base).toEqual({ items: ['a', 'X', 'c'] });
+		e.undo();
+		expect(e.base).toEqual({ items: ['a', 'b', 'c'] });
+		e.redo();
+		expect(e.base).toEqual({ items: ['a', 'X', 'c'] });
 	});
 
 	it('replaces all matching elements with a wildcard', () => {
 		const e = new Engine({ items: [1, 2, 3] });
 		e.replace('$.items[*]', 0);
+		expect(e.base).toEqual({ items: [0, 0, 0] });
+		e.undo();
+		expect(e.base).toEqual({ items: [1, 2, 3] });
+		e.redo();
 		expect(e.base).toEqual({ items: [0, 0, 0] });
 	});
 });
