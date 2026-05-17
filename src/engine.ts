@@ -101,6 +101,31 @@ export class Engine<T extends JsonValue = JsonValue> {
 		});
 	}
 
+	// Returns every value in draft that matches the JSONPath query, each paired
+	// with its normalized path. The path is what mutating ops accept, so result
+	// entries can be fed straight into replace/delete/etc.
+	get(jsonPath: string): Array<{ path: string; value: JsonValue }> {
+		const matched = paths(this.draft, jsonPath);
+		return matched.map(p => ({
+			path: p,
+			value: this.getAt(this.segmentsFrom(p)),
+		}));
+	}
+
+	// Strict single-match read. Throws an Error when the path resolves to more
+	// than one value (ambiguous), and throws `undefined` itself when it resolves
+	// to none — the missing value is signalled by throwing the absence.
+	getValue(jsonPath: string): JsonValue {
+		const matched = paths(this.draft, jsonPath);
+		if (matched.length > 1) {
+			throw new Error(`getValue: path resolved to ${matched.length} values, expected exactly one`);
+		}
+		if (matched.length === 0) {
+			throw undefined;
+		}
+		return this.getAt(this.segmentsFrom(matched[0]));
+	}
+
 	add(jsonPath: string, value: any): void {
 		const normalizedPaths = this.jsonPathToNormalizedPaths(jsonPath);
 		if (normalizedPaths.length === 0) {
