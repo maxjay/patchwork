@@ -31,6 +31,49 @@ export type DiffOp =
 	| { op: OpType.Move | OpType.Copy; from: string; to: string }
 	| { op: OpType.Revert; path: string };
 
+// Path helpers used by NodeEngine.
+//
+// Normalized paths from paths() always end with `]` after the root token,
+// so segment boundaries are unambiguous from raw string comparison:
+//   prefix      $['cars']
+//   sibling     $['carsTrucks']   — does NOT start with prefix + '['
+//   child       $['cars'][0]      — DOES start with prefix + '['
+//   self        $['cars']         — equals prefix exactly
+
+function joinPath(prefix: string, childPath: string): string {
+	// childPath always starts with $; strip it and concat to prefix
+	return prefix + childPath.slice(1);
+}
+
+function rebasePath(fullPath: string, prefix: string): string {
+	if (fullPath === prefix) return '$';
+	return '$' + fullPath.slice(prefix.length);
+}
+
+function isUnderPrefix(fullPath: string, prefix: string): boolean {
+	return fullPath === prefix || fullPath.startsWith(prefix + '[');
+}
+
+function rebaseDiffOp(op: DiffOp, prefix: string): DiffOp {
+	if (op.op === OpType.Move || op.op === OpType.Copy) {
+		return { ...op, from: rebasePath(op.from, prefix), to: rebasePath(op.to, prefix) };
+	}
+	return { ...op, path: rebasePath(op.path, prefix) };
+}
+
+function opPath(op: DiffOp): string {
+	return op.op === OpType.Move || op.op === OpType.Copy ? op.from : op.path;
+}
+
+// In-place write at a non-root path against any target object. Used by
+// NodeEngine.accept/decline to mutate parent.base/draft at a subtree.
+function setOnTarget(target: any, segments: (string | number)[], value: any): void {
+	let cur = target;
+	for (let i = 0; i < segments.length - 1; i++) cur = cur[segments[i]];
+	const key = segments[segments.length - 1];
+	cur[key] = value;
+}
+
 export class Engine<T extends JsonValue = JsonValue> {
 	// The committed source of truth. Mutated only by accept() (promoting draft
 	// into base) and by undo/redo of accept itself. Read by diff() to know what
@@ -54,7 +97,8 @@ export class Engine<T extends JsonValue = JsonValue> {
 		this.draft = structuredClone(this.base);
 	}
 
-	private pushOperation(op: Operation) {
+	/** @internal */
+	pushOperation(op: Operation) {
 		this.undoStack.push(op);
 		this.redoStack = []; // branching discards redo history
 	}
@@ -124,6 +168,19 @@ export class Engine<T extends JsonValue = JsonValue> {
 			throw undefined;
 		}
 		return this.getAt(this.segmentsFrom(matched[0]));
+	}
+
+	// Returns a scoped lens onto a sub-path of this engine. The child shares
+	// state with the parent: mutations through either are visible in both,
+	// undo/redo runs against the parent's stack, but accept/decline/diff on
+	// the child are scoped to its subtree. The path must resolve to exactly
+	// one existing node; throws otherwise.
+	getNodeEngine<U extends JsonValue = JsonValue>(jsonPath: string): NodeEngine<U> {
+		const matched = paths(this.draft, jsonPath);
+		if (matched.length !== 1) {
+			throw new Error(`getNodeEngine: path must resolve to exactly one node, got ${matched.length}`);
+		}
+		return new NodeEngine<U>(this as Engine<JsonValue>, matched[0]);
 	}
 
 	add(jsonPath: string, value: any): void {
@@ -450,7 +507,8 @@ export class Engine<T extends JsonValue = JsonValue> {
 
 	// Uses the library parser to extract (string | number) segments from a JSONPath.
 	// Works on both normalized paths (output of paths()) and simple literal paths.
-	private segmentsFrom(jsonPath: string): (string | number)[] {
+	/** @internal */
+	segmentsFrom(jsonPath: string): (string | number)[] {
 		const ast = parse(jsonPath);
 		const segments: (string | number)[] = [];
 		for (const segment of ast.segments) {
@@ -469,7 +527,8 @@ export class Engine<T extends JsonValue = JsonValue> {
 		return segments;
 	}
 
-	private getAt(segments: (string | number)[], source: any = this.draft): any {
+	/** @internal */
+	getAt(segments: (string | number)[], source: any = this.draft): any {
 		if (segments.length === 0) return source;
 		let current: any = source;
 		for (let i = 0; i < segments.length - 1; i++) {
@@ -604,6 +663,116 @@ export class Engine<T extends JsonValue = JsonValue> {
 	// '$.store.book[*].author'; as an example
 	private jsonPathToNormalizedPaths(jsonPath: string): string[] {
 		return paths(this.draft, jsonPath);
+	}
+}
+
+// A scoped lens over a sub-path of a parent Engine. Owns no state itself —
+// only a reference to the parent and a normalized path prefix. All reads
+// resolve through the parent every time (so the child stays attached even
+// if the parent reassigns the subtree), and all writes forward to the
+// parent's methods with paths rewritten into the parent's frame.
+//
+// Mutating ops share the parent's undo stack; undo()/redo() are pure
+// delegates. accept()/decline()/diff() are scoped to the subtree.
+export class NodeEngine<T extends JsonValue = JsonValue> {
+	private segs: (string | number)[];
+
+	constructor(
+		private parent: Engine<JsonValue>,
+		private prefix: string,
+	) {
+		this.segs = parent.segmentsFrom(prefix);
+	}
+
+	get base(): T {
+		return this.parent.getAt(this.segs, this.parent.base) as T;
+	}
+
+	get draft(): T {
+		return this.parent.getAt(this.segs, this.parent.draft) as T;
+	}
+
+	// Mutations — rewrite path into parent frame, forward to parent.
+
+	add(jsonPath: string, value: any): void {
+		this.parent.add(joinPath(this.prefix, jsonPath), value);
+	}
+
+	replace(jsonPath: string, value: any): void {
+		this.parent.replace(joinPath(this.prefix, jsonPath), value);
+	}
+
+	delete(jsonPath: string): void {
+		this.parent.delete(joinPath(this.prefix, jsonPath));
+	}
+
+	revert(jsonPath: string): void {
+		this.parent.revert(joinPath(this.prefix, jsonPath));
+	}
+
+	move(from: string, to: string): void {
+		this.parent.move(joinPath(this.prefix, from), joinPath(this.prefix, to));
+	}
+
+	copy(from: string, to: string): void {
+		this.parent.copy(joinPath(this.prefix, from), joinPath(this.prefix, to));
+	}
+
+	// Reads — forward then rebase any returned paths back into the child frame.
+
+	get(jsonPath: string): Array<{ path: string; value: JsonValue }> {
+		return this.parent.get(joinPath(this.prefix, jsonPath))
+			.map(r => ({ path: rebasePath(r.path, this.prefix), value: r.value }));
+	}
+
+	getValue(jsonPath: string): JsonValue {
+		return this.parent.getValue(joinPath(this.prefix, jsonPath));
+	}
+
+	// History — pure delegation. The parent owns the stack; whether the last
+	// op originated through this child or directly through the parent is
+	// irrelevant for undo/redo.
+
+	undo(): void { this.parent.undo(); }
+	redo(): void { this.parent.redo(); }
+
+	// Subtree-scoped accept: replace ONLY the prefix subtree of parent.base
+	// with a clone of the same subtree of parent.draft. Trucks (or anything
+	// else outside the prefix) in parent.base stay untouched.
+	accept(): void {
+		const oldBase = structuredClone(this.parent.getAt(this.segs, this.parent.base));
+		const newBase = structuredClone(this.parent.getAt(this.segs, this.parent.draft));
+		setOnTarget(this.parent.base, this.segs, newBase);
+		this.parent.pushOperation({
+			undo: () => setOnTarget(this.parent.base, this.segs, oldBase),
+			redo: () => setOnTarget(this.parent.base, this.segs, structuredClone(newBase)),
+		});
+	}
+
+	// Subtree-scoped decline: replace ONLY the prefix subtree of parent.draft
+	// with a clone of the same subtree of parent.base.
+	decline(): void {
+		const oldDraft = structuredClone(this.parent.getAt(this.segs, this.parent.draft));
+		const newDraft = structuredClone(this.parent.getAt(this.segs, this.parent.base));
+		setOnTarget(this.parent.draft, this.segs, newDraft);
+		this.parent.pushOperation({
+			undo: () => setOnTarget(this.parent.draft, this.segs, oldDraft),
+			redo: () => setOnTarget(this.parent.draft, this.segs, structuredClone(newDraft)),
+		});
+	}
+
+	// Scoped diff: filter parent's diff to ops under the prefix, then rebase
+	// their paths into the child's frame.
+	diff(): DiffOp[] {
+		return this.parent.diff()
+			.filter(op => isUnderPrefix(opPath(op), this.prefix))
+			.map(op => rebaseDiffOp(op, this.prefix));
+	}
+
+	// Nested children compose by joining paths and creating a fresh lens
+	// against the same root parent.
+	getNodeEngine<U extends JsonValue = JsonValue>(jsonPath: string): NodeEngine<U> {
+		return this.parent.getNodeEngine<U>(joinPath(this.prefix, jsonPath));
 	}
 }
 

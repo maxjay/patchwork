@@ -764,7 +764,7 @@ describe('Engine nesting (proposed)', () => {
 
 		const reds = engine.get('$..*[?@.color == "red"]');
 		expect(reds).toHaveLength(2);
-		expect(reds).toEqual(expect.arrayContaining([
+		expect(reds.map(r => r.value)).toEqual(expect.arrayContaining([
 			{ color: 'red', model: 'sedan' },
 			{ color: 'red', model: 'pickup' },
 		]));
@@ -778,7 +778,7 @@ describe('Engine nesting (proposed)', () => {
 		const cars = engine.getNodeEngine('$.cars');
 
 		const reds = cars.get('$[?@.color == "red"]');
-		expect(reds).toEqual([{ color: 'red' }]); // no trucks
+		expect(reds.map(r => r.value)).toEqual([{ color: 'red' }]); // no trucks
 	});
 
 	it('getNodeEngine throws when the path does not resolve to exactly one node', () => {
