@@ -644,7 +644,7 @@ describe('Engine.getValue', () => {
 //     to the child's root ($), not the parent's.
 //   - Multi-match paths (e.g. $.cars[*]): getNodeEngine throws — a child must
 //     resolve to a single concrete subtree.
-describe.skip('Engine nesting (proposed)', () => {
+describe('Engine nesting (proposed)', () => {
 	it('getNodeEngine returns a child rooted at the given path', () => {
 		const engine = new Engine({
 			cars: [{ color: 'red' }, { color: 'blue' }],
