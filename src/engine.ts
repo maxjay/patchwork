@@ -32,13 +32,15 @@ export type DiffOp =
 	| { op: OpType.Revert; path: string };
 
 export class Engine<T extends JsonValue = JsonValue> {
+	// The committed source of truth. Mutated only by accept() (promoting draft
+	// into base) and by undo/redo of accept itself. Read by diff() to know what
+	// to compare against, and by revert() to know what to restore.
 	base: T;
 
-	// A deep clone of the initial base, taken at construction time and never mutated.
-	// Used by diff() to compute what has net-changed across the whole session.
-	// The undo/redo stacks cannot serve this role — they only know how to reverse
-	// individual steps, not what the document looked like before any edits.
-	private readonly original: T;
+	// The working copy. All mutating ops (add/replace/delete/move/copy/revert)
+	// modify draft in place. accept() snapshots draft into base; decline()
+	// resets draft from base.
+	draft: T;
 
 	// Two stacks that implement linear undo/redo. Every mutating operation pushes
 	// an Operation onto undoStack. Calling undo() pops from undoStack and pushes
@@ -47,16 +49,9 @@ export class Engine<T extends JsonValue = JsonValue> {
 	private undoStack: Operation[] = [];
 	private redoStack: Operation[] = [];
 
-	// Ordered list of explicitly accepted snapshots. accept() appends here;
-	// decline() reads the last entry to revert base. Kept separate from the undo
-	// stack so decline() can find the last checkpoint in O(1) without inspecting
-	// the stack contents. Undo/redo of accept and decline mutate this list too,
-	// so it stays consistent with the rest of the history.
-	private checkpoints: T[] = [];
-
 	constructor(base: T) {
-		this.original = structuredClone(base);
-		this.base = base;
+		this.base = structuredClone(base);
+		this.draft = structuredClone(this.base);
 	}
 
 	private pushOperation(op: Operation) {
@@ -80,38 +75,33 @@ export class Engine<T extends JsonValue = JsonValue> {
 		}
 	}
 
-	// Snapshots the current draft as a checkpoint without touching base.
-	// Undo removes the checkpoint; redo re-adds it.
+	// Promotes the current draft to base. After accept(), base equals draft.
+	// Draft itself is untouched — only base moves. Undo restores the previous
+	// base; redo re-installs the snapshot taken at accept time.
 	accept(): void {
-		const snapshot = structuredClone(this.base);
-		this.checkpoints.push(snapshot);
+		const oldBase = this.base;
+		const newBase = structuredClone(this.draft);
+		this.base = newBase;
 		this.pushOperation({
-			undo: () => { this.checkpoints.pop(); },
-			redo: () => { this.checkpoints.push(structuredClone(snapshot)); },
+			undo: () => { this.base = oldBase; },
+			redo: () => { this.base = newBase; },
 		});
 	}
 
-	// Reverts base to the most recent checkpoint, or to original if none exist.
-	// The individual-op undo/redo stacks are left intact so that undoing this
-	// decline restores the full draft history too.
+	// Discards pending edits — draft is reset from a fresh clone of base.
+	// Base is untouched. Undo restores the previous draft; redo re-installs
+	// a clean clone of the base-at-decline-time.
 	decline(): void {
-		if (this.checkpoints.length === 0 && this.base === this.original) {
-			// no-op
-			return;
-		}
-		const target = this.checkpoints.length > 0
-			? this.checkpoints[this.checkpoints.length - 1]
-			: this.original;
-		const previousDraft = structuredClone(this.base);
-		this.base = structuredClone(target);
+		const oldDraft = this.draft;
+		const snapshot = structuredClone(this.base);
+		this.draft = structuredClone(snapshot);
 		this.pushOperation({
-			undo: () => { this.base = previousDraft; },
-			redo: () => { this.base = structuredClone(target); },
+			undo: () => { this.draft = oldDraft; },
+			redo: () => { this.draft = structuredClone(snapshot); },
 		});
 	}
 
 	add(jsonPath: string, value: any): void {
-		// const segments = this.segmentsFrom(jsonPath);
 		const normalizedPaths = this.jsonPathToNormalizedPaths(jsonPath);
 		if (normalizedPaths.length === 0) {
 			// Path didn't resolve to anything in the document. Two reasons this happens:
@@ -127,7 +117,7 @@ export class Engine<T extends JsonValue = JsonValue> {
 
 		const isArrayInsert = segmentsList.map(seg => {
 			if (seg.length === 0) return false;
-			let current: any = this.base;
+			let current: any = this.draft;
 			for (let i = 0; i < seg.length - 1; i++) current = current[seg[i]];
 			return Array.isArray(current) && typeof seg[seg.length - 1] === 'number';
 		});
@@ -205,14 +195,14 @@ export class Engine<T extends JsonValue = JsonValue> {
 	}
 
 	revert(jsonPath: string): void {
+		const pathsDraft = paths(this.draft, jsonPath);
 		const pathsBase = paths(this.base, jsonPath);
-		const pathsOrig = paths(this.original, jsonPath);
-		const allPaths = Array.from(new Set([...pathsBase, ...pathsOrig]));
+		const allPaths = Array.from(new Set([...pathsDraft, ...pathsBase]));
 
 		const segmentsList = allPaths.map(np => this.segmentsFrom(np));
 
-		const oldValues = segmentsList.map(seg => structuredClone(this.getAt(seg, this.base)));
-		const targetValues = segmentsList.map(seg => structuredClone(this.getAt(seg, this.original)));
+		const oldValues = segmentsList.map(seg => structuredClone(this.getAt(seg, this.draft)));
+		const targetValues = segmentsList.map(seg => structuredClone(this.getAt(seg, this.base)));
 
 		const doRevert = () => {
 			for (let i = 0; i < segmentsList.length; i++) {
@@ -241,17 +231,15 @@ export class Engine<T extends JsonValue = JsonValue> {
 		this.pushOperation({ op, undo: undoRevert, redo: doRevert });
 	}
 
-	// Returns the net difference between the original base (at construction) and
-	// the current base, as a flat list of DiffOps. This is a snapshot comparison —
-	// it tells you *what changed*, not *how* or *how many times*.
+	// Returns the net difference between base and draft as a flat list of
+	// DiffOps. A snapshot comparison — tells you *what changed* from committed
+	// to working, not *how* or *how many times*.
 	//
-	// This is intentionally separate from the undo stack. The stack records every
-	// individual operation and knows how to reverse each one. diff() doesn't care
-	// about history: if you replace $.a twice and then undo both, diff() returns [].
-	// The stack would still have seen two operations go through it.
+	// Independent of the undo stack: if you replace $.a twice and then undo
+	// both, diff() returns []. The stack would still have seen two operations.
 	diff(): DiffOp[] {
 		const ops: DiffOp[] = [];
-		this.diffNode(this.original, this.base, '$', ops);
+		this.diffNode(this.base, this.draft, '$', ops);
 		return ops;
 	}
 
@@ -284,7 +272,7 @@ export class Engine<T extends JsonValue = JsonValue> {
 		// check operation isn't against itself
 		const isSelfOperation = targetMeta.length === 1 && this.isSegmentsEqual(targetMeta[0].segments, fromSegments);
 		if (isSelfOperation && isMove) {
-			// no-op	
+			// no-op
 			return;
 		}
 		if (isMove && targetMeta.some(target => target.segments.length > fromSegments.length &&
@@ -295,7 +283,7 @@ export class Engine<T extends JsonValue = JsonValue> {
 		// check if we're removing from an array (for undo to know whether to insert or set)
 		let isArrayRemoval = false;
 		if (isMove) {
-			const container = fromSegments.length === 0 ? this.base : this.getAt(fromSegments.slice(0, -1));
+			const container = fromSegments.length === 0 ? this.draft : this.getAt(fromSegments.slice(0, -1));
 			isArrayRemoval = Array.isArray(container) && typeof fromSegments[fromSegments.length - 1] === 'number';
 		}
 
@@ -456,7 +444,7 @@ export class Engine<T extends JsonValue = JsonValue> {
 		return segments;
 	}
 
-	private getAt(segments: (string | number)[], source: any = this.base): any {
+	private getAt(segments: (string | number)[], source: any = this.draft): any {
 		if (segments.length === 0) return source;
 		let current: any = source;
 		for (let i = 0; i < segments.length - 1; i++) {
@@ -476,17 +464,17 @@ export class Engine<T extends JsonValue = JsonValue> {
 	}
 
 	private setAt(segments: any[], value: any): void {
-		if (segments.length === 0) { this.base = value as T; return; }
+		if (segments.length === 0) { this.draft = value as T; return; }
 		// basically, for every segment except the last, we try to access the next level.
 		// if it doesn't exist, we create an object or array depending on the next segment type.
-		// so for example, if we have segments ['a', 'b', 'c', 0, 'd'], we first check if base['a'] exists.
+		// so for example, if we have segments ['a', 'b', 'c', 0, 'd'], we first check if draft['a'] exists.
 		// If not, we create it as an object (since the next segment is 'b').
 		// Given that we've had to create b, we don't need to check to see if the rest exist as we know they don't
 		// so we can just create them all in one go.
 		// So C is created as an array since the next segment is an index
-		// And then at that index we create the object 
+		// And then at that index we create the object
 		console.log(segments);
-		let current: any = this.base;
+		let current: any = this.draft;
 		for (let i = 0; i < segments.length - 1; i++) {
 			const segment = segments[i];
 			const nextSegment = segments[i + 1];
@@ -542,9 +530,9 @@ export class Engine<T extends JsonValue = JsonValue> {
 		oldValue: any;
 	} {
 		if (segments.length === 0) {
-			return { segments, existed: true, oldValue: structuredClone(this.base) };
+			return { segments, existed: true, oldValue: structuredClone(this.draft) };
 		}
-		let current: any = this.base;
+		let current: any = this.draft;
 		let stopAt = segments.length - 1; // default: all intermediates exist, restore at the leaf
 		for (let i = 0; i < segments.length - 1; i++) {
 			const next = current[segments[i]];
@@ -564,8 +552,8 @@ export class Engine<T extends JsonValue = JsonValue> {
 
 	// add semantics: splices into arrays, sets on objects
 	private insertAt(segments: (string | number)[], value: any): void {
-		if (segments.length === 0) { this.base = value as T; return; }
-		let current: any = this.base;
+		if (segments.length === 0) { this.draft = value as T; return; }
+		let current: any = this.draft;
 		for (let i = 0; i < segments.length - 1; i++) current = current[segments[i]];
 		const key = segments[segments.length - 1];
 		if (Array.isArray(current) && typeof key === 'number') {
@@ -577,7 +565,7 @@ export class Engine<T extends JsonValue = JsonValue> {
 
 	private removeAt(segments: (string | number)[]): void {
 		if (segments.length === 0) return;
-		let current: any = this.base;
+		let current: any = this.draft;
 		for (let i = 0; i < segments.length - 1; i++) current = current[segments[i]];
 		const key = segments[segments.length - 1];
 		if (Array.isArray(current) && typeof key === 'number') {
@@ -590,26 +578,26 @@ export class Engine<T extends JsonValue = JsonValue> {
 	// jsonPath is a query selector, not a JSON Pointer. We need to convert it to a JSON Pointer before we can use it.
 	// '$.store.book[*].author'; as an example
 	private jsonPathToNormalizedPaths(jsonPath: string): string[] {
-		return paths(this.base, jsonPath);
+		return paths(this.draft, jsonPath);
 	}
 }
 
 // Test
 const engine = new Engine<any>({ a: { b: 3 } });
 engine.add('$.a.b.c[0].d', 5);
-console.log(engine.base);
-console.log(engine.base.a.b.c[0].d);
+console.log(engine.draft);
+console.log(engine.draft.a.b.c[0].d);
 engine.add('$.a.b', 3);
-console.log(engine.base);
+console.log(engine.draft);
 engine.add('$.a.b', []);
 engine.add('$.a.b[0]', 2);
 engine.add('$.a.b[0]', 1);
 engine.add('$.a.b[0]', 0);
-console.log(engine.base);
+console.log(engine.draft);
 engine.move('$.a.b[1]', '$.a.c');
-console.log(engine.base);
+console.log(engine.draft);
 engine.copy('$.a.c', '$.a.b[*]');
-console.log(engine.base);
+console.log(engine.draft);
 
 console.log(engine.diff());
 console.log(engine.exportChanges());

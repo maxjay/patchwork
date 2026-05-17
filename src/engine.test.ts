@@ -5,37 +5,37 @@ describe('Engine.replace', () => {
 	it('replaces a value in an object', () => {
 		const e = new Engine({ a: { b: 3 } });
 		e.replace('$.a.b', 99);
-		expect(e.base).toEqual({ a: { b: 99 } });
+		expect(e.draft).toEqual({ a: { b: 99 } });
 		e.undo();
-		expect(e.base).toEqual({ a: { b: 3 } });
+		expect(e.draft).toEqual({ a: { b: 3 } });
 		e.redo();
-		expect(e.base).toEqual({ a: { b: 99 } });
+		expect(e.draft).toEqual({ a: { b: 99 } });
 	});
 
 	it('replaces an element in an array', () => {
 		const e = new Engine({ items: ['a', 'b', 'c'] });
 		e.replace('$.items[1]', 'X');
-		expect(e.base).toEqual({ items: ['a', 'X', 'c'] });
+		expect(e.draft).toEqual({ items: ['a', 'X', 'c'] });
 		e.undo();
-		expect(e.base).toEqual({ items: ['a', 'b', 'c'] });
+		expect(e.draft).toEqual({ items: ['a', 'b', 'c'] });
 		e.redo();
-		expect(e.base).toEqual({ items: ['a', 'X', 'c'] });
+		expect(e.draft).toEqual({ items: ['a', 'X', 'c'] });
 	});
 
 	it('replaces nothing when no path matches query', () => {
 		const e = new Engine({ items: [1, 2, 3] });
 		e.replace('$.otherItems[*]', 0);
-		expect(e.base).toEqual({ items: [1, 2, 3] });
+		expect(e.draft).toEqual({ items: [1, 2, 3] });
 	});
 
 	it('replaces all matching elements with a wildcard', () => {
 		const e = new Engine({ items: [1, 2, 3] });
 		e.replace('$.items[*]', 0);
-		expect(e.base).toEqual({ items: [0, 0, 0] });
+		expect(e.draft).toEqual({ items: [0, 0, 0] });
 		e.undo();
-		expect(e.base).toEqual({ items: [1, 2, 3] });
+		expect(e.draft).toEqual({ items: [1, 2, 3] });
 		e.redo();
-		expect(e.base).toEqual({ items: [0, 0, 0] });
+		expect(e.draft).toEqual({ items: [0, 0, 0] });
 	});
 });
 
@@ -43,38 +43,38 @@ describe('Engine.add', () => {
 	it('sets a new key on an object', () => {
 		const e = new Engine<any>({ a: 1 });
 		e.add('$.b', 2);
-		expect(e.base).toEqual({ a: 1, b: 2 });
+		expect(e.draft).toEqual({ a: 1, b: 2 });
 	});
 
 	it('overwrites an existing object key', () => {
 		const e = new Engine({ a: 1 });
 		e.add('$.a', 99);
-		expect(e.base).toEqual({ a: 99 });
+		expect(e.draft).toEqual({ a: 99 });
 	});
 
 	it('inserts into an array without removing the existing element', () => {
 		const e = new Engine({ items: ['a', 'b', 'c'] });
 		e.add('$.items[1]', 'X');
-		expect(e.base).toEqual({ items: ['a', 'X', 'b', 'c'] });
+		expect(e.draft).toEqual({ items: ['a', 'X', 'b', 'c'] });
 	});
 
 	it('inserts at index 0, shifting all elements right', () => {
 		const e = new Engine({ items: ['a', 'b'] });
 		e.add('$.items[0]', 'X');
-		expect(e.base).toEqual({ items: ['X', 'a', 'b'] });
+		expect(e.draft).toEqual({ items: ['X', 'a', 'b'] });
 	});
 
 	it('inserts at multiple array positions without corrupting indices', () => {
 		const e = new Engine({ items: ['a', 'b', 'c'] });
 		// Wildcard matches [0,1,2]; reversing before insert keeps indices stable
 		e.add('$.items[*]', 'X');
-		expect(e.base).toEqual({ items: ['X', 'a', 'X', 'b', 'X', 'c'] });
+		expect(e.draft).toEqual({ items: ['X', 'a', 'X', 'b', 'X', 'c'] });
 	});
 
 	it('adds nothing when no path matches query', () => {
 		const e = new Engine({ items: [1, 2, 3] });
 		e.add('$.otherItems[*]', 0);
-		expect(e.base).toEqual({ items: [1, 2, 3] });
+		expect(e.draft).toEqual({ items: [1, 2, 3] });
 	});
 });
 
@@ -82,33 +82,33 @@ describe('Engine.add (creates missing intermediates)', () => {
 	it('creates a missing nested object key', () => {
 		const e = new Engine<any>({});
 		e.add('$.a.b', 1);
-		expect(e.base).toEqual({ a: { b: 1 } });
+		expect(e.draft).toEqual({ a: { b: 1 } });
 		e.undo();
-		expect(e.base).toEqual({});
+		expect(e.draft).toEqual({});
 		e.redo();
-		expect(e.base).toEqual({ a: { b: 1 } });
+		expect(e.draft).toEqual({ a: { b: 1 } });
 	});
 
 	it('creates several missing intermediates in one shot', () => {
 		const e = new Engine<any>({});
 		e.add('$.a.b.c.d', 5);
-		expect(e.base).toEqual({ a: { b: { c: { d: 5 } } } });
+		expect(e.draft).toEqual({ a: { b: { c: { d: 5 } } } });
 		e.undo();
-		expect(e.base).toEqual({});
+		expect(e.draft).toEqual({});
 	});
 
 	it('creates an array when the next segment is an index', () => {
 		const e = new Engine<any>({});
 		e.add('$.a[0].b', 1);
-		expect(e.base).toEqual({ a: [{ b: 1 }] });
+		expect(e.draft).toEqual({ a: [{ b: 1 }] });
 		e.undo();
-		expect(e.base).toEqual({});
+		expect(e.draft).toEqual({});
 	});
 
 	it('mixes existing prefix with fabricated tail', () => {
 		const e = new Engine<any>({ a: { b: 3 } });
 		e.add('$.a.b.c[0].d', 5);
-		expect(e.base).toEqual({ a: { b: { c: [{ d: 5 }] } } });
+		expect(e.draft).toEqual({ a: { b: { c: [{ d: 5 }] } } });
 	});
 
 	it('undo restores at the divergence point, not the leaf', () => {
@@ -116,19 +116,19 @@ describe('Engine.add (creates missing intermediates)', () => {
 		// Undo must put `b` back to 3, not try to surgically remove `c`.
 		const e = new Engine<any>({ a: { b: 3 } });
 		e.add('$.a.b.c', 5);
-		expect(e.base).toEqual({ a: { b: { c: 5 } } });
+		expect(e.draft).toEqual({ a: { b: { c: 5 } } });
 		e.undo();
-		expect(e.base).toEqual({ a: { b: 3 } });
+		expect(e.draft).toEqual({ a: { b: 3 } });
 		e.redo();
-		expect(e.base).toEqual({ a: { b: { c: 5 } } });
+		expect(e.draft).toEqual({ a: { b: { c: 5 } } });
 	});
 
 	it('undo removes the top-level key when the whole prefix was fabricated', () => {
 		const e = new Engine<any>({ x: 1 });
 		e.add('$.a.b.c', 5);
-		expect(e.base).toEqual({ x: 1, a: { b: { c: 5 } } });
+		expect(e.draft).toEqual({ x: 1, a: { b: { c: 5 } } });
 		e.undo();
-		expect(e.base).toEqual({ x: 1 });
+		expect(e.draft).toEqual({ x: 1 });
 	});
 
 	it('diff reflects the fabricated subtree as a single add', () => {
@@ -144,52 +144,52 @@ describe('Engine.delete', () => {
 	it('removes a key from an object', () => {
 		const e = new Engine<any>({ a: 1, b: 2 });
 		e.delete('$.a');
-		expect(e.base).toEqual({ b: 2 });
+		expect(e.draft).toEqual({ b: 2 });
 		e.undo();
-		expect(e.base).toEqual({ a: 1, b: 2 });
+		expect(e.draft).toEqual({ a: 1, b: 2 });
 		e.redo();
-		expect(e.base).toEqual({ b: 2 });
+		expect(e.draft).toEqual({ b: 2 });
 	});
 
 	it('removes an element from an array', () => {
 		const e = new Engine({ items: ['a', 'b', 'c'] });
 		e.delete('$.items[1]');
-		expect(e.base).toEqual({ items: ['a', 'c'] });
+		expect(e.draft).toEqual({ items: ['a', 'c'] });
 		e.undo();
-		expect(e.base).toEqual({ items: ['a', 'b', 'c'] });
+		expect(e.draft).toEqual({ items: ['a', 'b', 'c'] });
 		e.redo();
-		expect(e.base).toEqual({ items: ['a', 'c'] });
+		expect(e.draft).toEqual({ items: ['a', 'c'] });
 	});
 
 	it('removes multiple array elements without index corruption', () => {
 		const e = new Engine({ items: ['a', 'b', 'c'] });
 		e.delete('$.items[*]');
-		expect(e.base).toEqual({ items: [] });
+		expect(e.draft).toEqual({ items: [] });
 		e.undo();
-		expect(e.base).toEqual({ items: ['a', 'b', 'c'] });
+		expect(e.draft).toEqual({ items: ['a', 'b', 'c'] });
 		e.redo();
-		expect(e.base).toEqual({ items: [] });
+		expect(e.draft).toEqual({ items: [] });
 	});
 
 	it('removes a nested key', () => {
 		const e = new Engine<any>({ a: { b: 1, c: 2 } });
 		e.delete('$.a.b');
-		expect(e.base).toEqual({ a: { c: 2 } });
+		expect(e.draft).toEqual({ a: { c: 2 } });
 		e.undo();
-		expect(e.base).toEqual({ a: { b: 1, c: 2 } });
+		expect(e.draft).toEqual({ a: { b: 1, c: 2 } });
 		e.redo();
-		expect(e.base).toEqual({ a: { c: 2 } });
+		expect(e.draft).toEqual({ a: { c: 2 } });
 	});
 
 	it('does nothing when the path matches nothing', () => {
 		const e = new Engine({ a: 1 });
 		e.delete('$.z');
-		expect(e.base).toEqual({ a: 1 });
+		expect(e.draft).toEqual({ a: 1 });
 		e.undo();
 		// State shouldn't change if nothing was deleted
-		expect(e.base).toEqual({ a: 1 });
+		expect(e.draft).toEqual({ a: 1 });
 		e.redo();
-		expect(e.base).toEqual({ a: 1 });
+		expect(e.draft).toEqual({ a: 1 });
 	});
 });
 
@@ -259,84 +259,88 @@ describe('Engine.revert', () => {
 	it('reverts a replaced value back to original', () => {
 		const e = new Engine({ a: 1 });
 		e.replace('$.a', 99);
-		expect(e.base).toEqual({ a: 99 });
+		expect(e.draft).toEqual({ a: 99 });
 		e.revert('$.a');
-		expect(e.base).toEqual({ a: 1 });
+		expect(e.draft).toEqual({ a: 1 });
 		e.undo(); // Undo the revert!
-		expect(e.base).toEqual({ a: 99 });
+		expect(e.draft).toEqual({ a: 99 });
 	});
 
 	it('reverts an added value by deleting it', () => {
 		const e = new Engine<any>({ a: 1 });
 		e.add('$.b', 2);
-		expect(e.base).toEqual({ a: 1, b: 2 });
+		expect(e.draft).toEqual({ a: 1, b: 2 });
 		e.revert('$.b');
-		expect(e.base).toEqual({ a: 1 });
+		expect(e.draft).toEqual({ a: 1 });
 	});
 
 	it('reverts a deleted value by restoring it', () => {
 		const e = new Engine<any>({ a: 1, b: 2 });
 		e.delete('$.b');
-		expect(e.base).toEqual({ a: 1 });
+		expect(e.draft).toEqual({ a: 1 });
 		e.revert('$.b');
-		expect(e.base).toEqual({ a: 1, b: 2 });
+		expect(e.draft).toEqual({ a: 1, b: 2 });
 	});
 
 	it('handles wildcard reverts', () => {
 		const e = new Engine({ items: [1, 2, 3] });
 		e.replace('$.items[*]', 0);
-		expect(e.base).toEqual({ items: [0, 0, 0] });
+		expect(e.draft).toEqual({ items: [0, 0, 0] });
 		e.revert('$.items[*]');
-		expect(e.base).toEqual({ items: [1, 2, 3] });
+		expect(e.draft).toEqual({ items: [1, 2, 3] });
 	});
 });
 
 describe('Engine.accept', () => {
-	it('does not change base', () => {
+	it('promotes draft to base', () => {
 		const e = new Engine({ a: 1 });
 		e.replace('$.a', 2);
-		e.accept();
-		expect(e.base).toEqual({ a: 2 });
-	});
-
-	it('undo removes the checkpoint so decline falls back to original', () => {
-		const e = new Engine<any>({ a: 1 });
-		e.replace('$.a', 2);
-		e.accept();
-		e.undo(); // undo the accept — checkpoint removed
-		e.decline(); // no checkpoint, reverts to original
 		expect(e.base).toEqual({ a: 1 });
+		expect(e.draft).toEqual({ a: 2 });
+		e.accept();
+		expect(e.base).toEqual({ a: 2 });
+		expect(e.draft).toEqual({ a: 2 });
 	});
 
-	it('redo re-adds the checkpoint', () => {
+	it('undo restores the previous base', () => {
 		const e = new Engine<any>({ a: 1 });
 		e.replace('$.a', 2);
 		e.accept();
-		e.undo(); // remove checkpoint
-		e.redo(); // re-add checkpoint
-		e.decline(); // checkpoint exists again, reverts to { a: 2 }
-		expect(e.base).toEqual({ a: 2 });
+		e.undo(); // undo the accept — base goes back
+		e.decline(); // draft resets from base, which is the original
+		expect(e.draft).toEqual({ a: 1 });
+	});
+
+	it('redo re-applies the accept', () => {
+		const e = new Engine<any>({ a: 1 });
+		e.replace('$.a', 2);
+		e.accept();
+		e.undo();
+		e.redo();
+		e.decline(); // base is back to { a: 2 }, so draft resets to that
+		expect(e.draft).toEqual({ a: 2 });
 	});
 });
 
 describe('Engine.decline', () => {
-	it('reverts base to the last checkpoint', () => {
+	it('resets draft from the current base', () => {
 		const e = new Engine<any>({ a: 1 });
 		e.replace('$.a', 2);
 		e.accept();
 		e.replace('$.a', 99);
 		e.decline();
+		expect(e.draft).toEqual({ a: 2 });
 		expect(e.base).toEqual({ a: 2 });
 	});
 
-	it('reverts to original when no checkpoints exist', () => {
+	it('resets draft to base when nothing has been accepted', () => {
 		const e = new Engine<any>({ a: 1 });
 		e.replace('$.a', 99);
 		e.decline();
-		expect(e.base).toEqual({ a: 1 });
+		expect(e.draft).toEqual({ a: 1 });
 	});
 
-	it('reverts to the most recent checkpoint, not the oldest', () => {
+	it('resets to the most recently accepted base', () => {
 		const e = new Engine<any>({ a: 1 });
 		e.replace('$.a', 2);
 		e.accept();
@@ -344,16 +348,16 @@ describe('Engine.decline', () => {
 		e.accept();
 		e.replace('$.a', 99);
 		e.decline();
-		expect(e.base).toEqual({ a: 3 });
+		expect(e.draft).toEqual({ a: 3 });
 	});
 
 	it('undo restores the declined draft', () => {
 		const e = new Engine<any>({ a: 1 });
 		e.replace('$.a', 99);
 		e.decline();
-		expect(e.base).toEqual({ a: 1 });
+		expect(e.draft).toEqual({ a: 1 });
 		e.undo(); // undo the decline
-		expect(e.base).toEqual({ a: 99 });
+		expect(e.draft).toEqual({ a: 99 });
 	});
 
 	it('redo re-applies the decline', () => {
@@ -362,12 +366,13 @@ describe('Engine.decline', () => {
 		e.decline();
 		e.undo();
 		e.redo();
-		expect(e.base).toEqual({ a: 1 });
+		expect(e.draft).toEqual({ a: 1 });
 	});
 
-	it('is a no-op when base equals original and no checkpoints exist', () => {
+	it('is a no-op when draft already equals base', () => {
 		const e = new Engine({ a: 1 });
 		e.decline();
+		expect(e.draft).toEqual({ a: 1 });
 		expect(e.base).toEqual({ a: 1 });
 	});
 });
@@ -376,55 +381,55 @@ describe('Engine.move', () => {
 	it('moves a value from one path to another', () => {
 		const e = new Engine<any>({ a: { b: 3 }, x: 0 });
 		e.move('$.a.b', '$.x');
-		expect(e.base).toEqual({ a: {}, x: 3 });
+		expect(e.draft).toEqual({ a: {}, x: 3 });
 
 		e.undo();
-		expect(e.base).toEqual({ a: { b: 3 }, x: 0 });
+		expect(e.draft).toEqual({ a: { b: 3 }, x: 0 });
 	});
 
 	it('moves an object from one path to another', () => {
 		const e = new Engine<any>({ a: { b: { foo: 'bar' } }, x: 0 });
 		e.move('$.a.b', '$.x');
-		expect(e.base).toEqual({ a: {}, x: { foo: 'bar' } });
+		expect(e.draft).toEqual({ a: {}, x: { foo: 'bar' } });
 
 		e.undo();
-		expect(e.base).toEqual({ a: { b: { foo: 'bar' } }, x: 0 });
+		expect(e.draft).toEqual({ a: { b: { foo: 'bar' } }, x: 0 });
 	});
 
 	it('moves an array element from one path to another', () => {
 		const e = new Engine<any>({ a: { b: [3, 4, 5] }, x: 0 });
 		e.move('$.a.b[1]', '$.x');
-		expect(e.base).toEqual({ a: { b: [3, 5] }, x: 4 });
+		expect(e.draft).toEqual({ a: { b: [3, 5] }, x: 4 });
 
 		e.undo();
-		expect(e.base).toEqual({ a: { b: [3, 4, 5] }, x: 0 });
+		expect(e.draft).toEqual({ a: { b: [3, 4, 5] }, x: 0 });
 	});
 
 	it('moves an array from one path to another', () => {
 		const e = new Engine<any>({ a: { b: [3, 4, 5] }, x: 0 });
 		e.move('$.a.b', '$.x');
-		expect(e.base).toEqual({ a: {}, x: [3, 4, 5] });
+		expect(e.draft).toEqual({ a: {}, x: [3, 4, 5] });
 
 		e.undo();
-		expect(e.base).toEqual({ a: { b: [3, 4, 5] }, x: 0 });
+		expect(e.draft).toEqual({ a: { b: [3, 4, 5] }, x: 0 });
 	});
 
 	it('moves item to end of an array', () => {
 		const e = new Engine<any>({ a: { b: 6 }, x: [3, 4, 5] });
 		e.move('$.a.b', '$.x[3]');
-		expect(e.base).toEqual({ a: {}, x: [3, 4, 5, 6] });
+		expect(e.draft).toEqual({ a: {}, x: [3, 4, 5, 6] });
 
 		e.undo();
-		expect(e.base).toEqual({ a: { b: 6 }, x: [3, 4, 5] });
+		expect(e.draft).toEqual({ a: { b: 6 }, x: [3, 4, 5] });
 	});
 
 	it('moves one source value into multiple normalized target paths', () => {
 		const e = new Engine({ a: { b: 1 }, items: [{ x: 0 }, { x: 0 }] });
 		e.move('$.a.b', '$.items[*].x');
-		expect(e.base).toEqual({ a: {}, items: [{ x: 1 }, { x: 1 }] });
+		expect(e.draft).toEqual({ a: {}, items: [{ x: 1 }, { x: 1 }] });
 
 		e.undo();
-		expect(e.base).toEqual({ a: { b: 1 }, items: [{ x: 0 }, { x: 0 }] });
+		expect(e.draft).toEqual({ a: { b: 1 }, items: [{ x: 0 }, { x: 0 }] });
 	});
 
 	it('throws when from path resolves to more than one path', () => {
@@ -442,55 +447,55 @@ describe('Engine.copy', () => {
 	it('copies a value from one path to another', () => {
 		const e = new Engine<any>({ a: { b: 3 }, x: 0 });
 		e.copy('$.a.b', '$.x');
-		expect(e.base).toEqual({ a: { b: 3 }, x: 3 });
+		expect(e.draft).toEqual({ a: { b: 3 }, x: 3 });
 
 		e.undo();
-		expect(e.base).toEqual({ a: { b: 3 }, x: 0 });
+		expect(e.draft).toEqual({ a: { b: 3 }, x: 0 });
 	});
 
 	it('copies an object from one path to another', () => {
 		const e = new Engine<any>({ a: { b: { foo: 'bar' } }, x: 0 });
 		e.copy('$.a.b', '$.x');
-		expect(e.base).toEqual({ a: { b: { foo: 'bar' } }, x: { foo: 'bar' } });
+		expect(e.draft).toEqual({ a: { b: { foo: 'bar' } }, x: { foo: 'bar' } });
 
 		e.undo();
-		expect(e.base).toEqual({ a: { b: { foo: 'bar' } }, x: 0 });
+		expect(e.draft).toEqual({ a: { b: { foo: 'bar' } }, x: 0 });
 	});
 
 	it('copies an array element from one path to another', () => {
 		const e = new Engine<any>({ a: { b: [3, 4, 5] }, x: 0 });
 		e.copy('$.a.b[1]', '$.x');
-		expect(e.base).toEqual({ a: { b: [3, 4, 5] }, x: 4 });
+		expect(e.draft).toEqual({ a: { b: [3, 4, 5] }, x: 4 });
 
 		e.undo();
-		expect(e.base).toEqual({ a: { b: [3, 4, 5] }, x: 0 });
+		expect(e.draft).toEqual({ a: { b: [3, 4, 5] }, x: 0 });
 	});
 
 	it('copies an array from one path to another', () => {
 		const e = new Engine<any>({ a: { b: [3, 4, 5] }, x: 0 });
 		e.copy('$.a.b', '$.x');
-		expect(e.base).toEqual({ a: { b: [3, 4, 5] }, x: [3, 4, 5] });
+		expect(e.draft).toEqual({ a: { b: [3, 4, 5] }, x: [3, 4, 5] });
 
 		e.undo();
-		expect(e.base).toEqual({ a: { b: [3, 4, 5] }, x: 0 });
+		expect(e.draft).toEqual({ a: { b: [3, 4, 5] }, x: 0 });
 	});
 
 	it('copies item to end of an array', () => {
 		const e = new Engine<any>({ a: { b: 6 }, x: [3, 4, 5] });
 		e.copy('$.a.b', '$.x[3]');
-		expect(e.base).toEqual({ a: { b: 6 }, x: [3, 4, 5, 6] });
+		expect(e.draft).toEqual({ a: { b: 6 }, x: [3, 4, 5, 6] });
 
 		e.undo();
-		expect(e.base).toEqual({ a: { b: 6 }, x: [3, 4, 5] });
+		expect(e.draft).toEqual({ a: { b: 6 }, x: [3, 4, 5] });
 	});
 
 	it('copies one source value into multiple normalized target paths', () => {
 		const e = new Engine({ a: { b: 1 }, items: [{ x: 0 }, { x: 0 }] });
 		e.copy('$.a.b', '$.items[*].x');
-		expect(e.base).toEqual({ a: { b: 1 }, items: [{ x: 1 }, { x: 1 }] });
+		expect(e.draft).toEqual({ a: { b: 1 }, items: [{ x: 1 }, { x: 1 }] });
 
 		e.undo();
-		expect(e.base).toEqual({ a: { b: 1 }, items: [{ x: 0 }, { x: 0 }] });
+		expect(e.draft).toEqual({ a: { b: 1 }, items: [{ x: 0 }, { x: 0 }] });
 	});
 
 	it('throws when from path resolves to more than one path', () => {
@@ -501,10 +506,10 @@ describe('Engine.copy', () => {
 	it('allows copying a path into one of its own descendants', () => {
 		const e = new Engine({ a: { b: { c: 1 } } });
 		e.copy('$.a.b', '$.a.b.x');
-		expect(e.base).toEqual({ a: { b: { c: 1, x: { c: 1 } } } });
+		expect(e.draft).toEqual({ a: { b: { c: 1, x: { c: 1 } } } });
 
 		e.undo();
-		expect(e.base).toEqual({ a: { b: { c: 1 } } });
+		expect(e.draft).toEqual({ a: { b: { c: 1 } } });
 	});
 });
 
@@ -518,7 +523,7 @@ describe('Engine.exportChanges', () => {
 		e.copy('$.a', '$.copyTargets.*');
 		e.revert('$.a');
 
-		expect(e.base).toEqual({ a: 1, b: 3, items: ['x'], copyTargets: { foo: 2, bar: 2 } });
+		expect(e.draft).toEqual({ a: 1, b: 3, items: ['x'], copyTargets: { foo: 2, bar: 2 } });
 
 		expect(e.exportChanges()).toEqual([
 			{ op: 'replace', path: "$.a", value: 2 },
@@ -544,6 +549,6 @@ describe('Engine.importChanges', () => {
 		] as DiffOp[];
 		e.importChanges(changes);
 
-		expect(e.base).toEqual({ a: 6, b: 3, items: ['a'], copyTargets: { foo: 2, bar: 2 } });
+		expect(e.draft).toEqual({ a: 6, b: 3, items: ['a'], copyTargets: { foo: 2, bar: 2 } });
 	});
 });
