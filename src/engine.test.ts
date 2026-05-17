@@ -553,6 +553,80 @@ describe('Engine.importChanges', () => {
 	});
 });
 
+describe('Engine.get', () => {
+	it('returns an array of {path, value} for a literal path', () => {
+		const e = new Engine({ a: { b: 3 } });
+		expect(e.get('$.a.b')).toEqual([
+			{ path: "$['a']['b']", value: 3 },
+		]);
+	});
+
+	it('returns multiple matches for a wildcard', () => {
+		const e = new Engine({ items: ['a', 'b', 'c'] });
+		expect(e.get('$.items[*]')).toEqual([
+			{ path: "$['items'][0]", value: 'a' },
+			{ path: "$['items'][1]", value: 'b' },
+			{ path: "$['items'][2]", value: 'c' },
+		]);
+	});
+
+	it('returns an empty array when nothing matches', () => {
+		const e = new Engine({ a: 1 });
+		expect(e.get('$.missing')).toEqual([]);
+	});
+
+	it('reads from draft, not base', () => {
+		const e = new Engine({ a: 1 });
+		e.replace('$.a', 99);
+		expect(e.get('$.a')).toEqual([{ path: "$['a']", value: 99 }]);
+	});
+
+	it('supports filter expressions across collections', () => {
+		const e = new Engine({
+			cars: [{ color: 'red' }, { color: 'blue' }],
+			trucks: [{ color: 'red' }, { color: 'green' }],
+		});
+		const reds = e.get('$..*[?@.color == "red"]');
+		expect(reds).toHaveLength(2);
+		expect(reds.map(r => r.value)).toEqual(
+			expect.arrayContaining([
+				{ color: 'red' },
+				{ color: 'red' },
+			]),
+		);
+	});
+});
+
+describe('Engine.getValue', () => {
+	it('returns the value at a single matching path', () => {
+		const e = new Engine({ a: { b: 3 } });
+		expect(e.getValue('$.a.b')).toBe(3);
+	});
+
+	it('returns nested objects directly (not wrapped)', () => {
+		const e = new Engine({ server: { host: 'localhost', port: 8080 } });
+		expect(e.getValue('$.server')).toEqual({ host: 'localhost', port: 8080 });
+	});
+
+	it('reads from draft', () => {
+		const e = new Engine({ a: 1 });
+		e.replace('$.a', 99);
+		expect(e.getValue('$.a')).toBe(99);
+	});
+
+	it('throws undefined when the path resolves to no value', () => {
+		const e = new Engine({ a: 1 });
+		let thrown: unknown = 'sentinel';
+		try { e.getValue('$.missing'); } catch (err) { thrown = err; }
+		expect(thrown).toBeUndefined();
+	});
+
+	it('throws an Error when the path resolves to multiple values', () => {
+		const e = new Engine({ items: [1, 2, 3] });
+		expect(() => e.getValue('$.items[*]')).toThrow();
+	});
+});
+
 // A child engine is a scoped lens onto a sub-path of a parent engine. The
 // parent owns the underlying base/draft and the undo stack; the child reads
 // and writes through the parent. Mutations through the child are visible in
