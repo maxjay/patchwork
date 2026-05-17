@@ -682,13 +682,13 @@ describe.skip('Engine nesting (proposed)', () => {
 		]);
 	});
 
-	it('query returns matching values across the whole document', () => {
+	it('get returns matching values across the whole document', () => {
 		const engine = new Engine({
 			cars: [{ color: 'red', model: 'sedan' }, { color: 'blue', model: 'suv' }],
 			trucks: [{ color: 'red', model: 'pickup' }, { color: 'green', model: 'box' }],
 		});
 
-		const reds = engine.query('$..*[?@.color == "red"]');
+		const reds = engine.get('$..*[?@.color == "red"]');
 		expect(reds).toHaveLength(2);
 		expect(reds).toEqual(expect.arrayContaining([
 			{ color: 'red', model: 'sedan' },
@@ -696,14 +696,14 @@ describe.skip('Engine nesting (proposed)', () => {
 		]));
 	});
 
-	it('query on a child scopes to that subtree', () => {
+	it('get on a child scopes to that subtree', () => {
 		const engine = new Engine({
 			cars: [{ color: 'red' }, { color: 'blue' }],
 			trucks: [{ color: 'red' }, { color: 'green' }],
 		});
 		const cars = engine.getNodeEngine('$.cars');
 
-		const reds = cars.query('$[?@.color == "red"]');
+		const reds = cars.get('$[?@.color == "red"]');
 		expect(reds).toEqual([{ color: 'red' }]); // no trucks
 	});
 
