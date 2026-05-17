@@ -51,7 +51,12 @@
     "url": "git+https://github.com/maxjay/patchwork.git"
   },
   "keywords": [],
-  "author": "",
+  "author": "Max <maxjay2000@gmail.com>",
+  "contributors": [
+    { "name": "Beth Grant", "email": "bethgrant@live.co.uk" },
+    { "name": "Hanqi Zhou", "email": "hz645@cornell.edu" },
+    { "name": "George Wright", "email": "wrightgeorge42@gmail.com" }
+  ],
   "license": "Apache-2.0",
   "bugs": {
     "url": "https://github.com/maxjay/patchwork/issues"
@@ -86,6 +91,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "ajv": "^8.20.0"
+    "ajv": "^8.20.0",
+    "jsonpath-rfc9535": "^1.3.0"
   }
 }

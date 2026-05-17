@@ -426,6 +426,13 @@ patchwork/angular    observeValue, observeDiff, observeExport
 - [DESIGN.md](docs/DESIGN.md) — design decisions
 - [SCENARIOS.md](docs/SCENARIOS.md) — test scenarios
 
+## Contributors
+
+- [Max](https://github.com/maxjay)
+- Beth Grant
+- Hanqi Zhou
+- George Wright
+
 ## License
 
 Apache-2.0
