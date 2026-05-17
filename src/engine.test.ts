@@ -552,3 +552,164 @@ describe('Engine.importChanges', () => {
 		expect(e.draft).toEqual({ a: 6, b: 3, items: ['a'], copyTargets: { foo: 2, bar: 2 } });
 	});
 });
+
+// A child engine is a scoped lens onto a sub-path of a parent engine. The
+// parent owns the underlying base/draft and the undo stack; the child reads
+// and writes through the parent. Mutations through the child are visible in
+// the parent (and vice versa) because they're the same physical state — the
+// child is not a copy.
+//
+// Open design questions captured by this suite:
+//   - Undo: shared with parent. cars.undo() pops the parent's stack and
+//     reverses whatever was last done — even if that was through engine,
+//     not cars. This keeps history linear; a per-child stack would split
+//     history in confusing ways.
+//   - Accept/decline: act on the child's subtree only. cars.accept() snapshots
+//     only the cars subtree of draft into the cars subtree of base.
+//   - Diff: scoped to the child. cars.diff() returns ops with paths relative
+//     to the child's root ($), not the parent's.
+//   - Multi-match paths (e.g. $.cars[*]): getNodeEngine throws — a child must
+//     resolve to a single concrete subtree.
+describe.skip('Engine nesting (proposed)', () => {
+	it('getNodeEngine returns a child rooted at the given path', () => {
+		const engine = new Engine({
+			cars: [{ color: 'red' }, { color: 'blue' }],
+			trucks: [{ color: 'red' }, { color: 'green' }],
+		});
+
+		const cars = engine.getNodeEngine('$.cars');
+		expect(cars.draft).toEqual([{ color: 'red' }, { color: 'blue' }]);
+		expect(cars.base).toEqual([{ color: 'red' }, { color: 'blue' }]);
+
+		const trucks = engine.getNodeEngine('$.trucks');
+		expect(trucks.draft).toEqual([{ color: 'red' }, { color: 'green' }]);
+	});
+
+	it('mutations through child are visible in parent', () => {
+		const engine = new Engine({
+			cars: [{ color: 'red' }],
+			trucks: [{ color: 'red' }],
+		});
+		const cars = engine.getNodeEngine('$.cars');
+
+		cars.replace('$[0].color', 'yellow');
+
+		expect(engine.draft).toEqual({
+			cars: [{ color: 'yellow' }],
+			trucks: [{ color: 'red' }],
+		});
+		expect(cars.draft).toEqual([{ color: 'yellow' }]);
+	});
+
+	it('mutations through parent are visible in child', () => {
+		const engine = new Engine({
+			cars: [{ color: 'red' }],
+		});
+		const cars = engine.getNodeEngine('$.cars');
+
+		engine.replace('$.cars[0].color', 'purple');
+
+		expect(cars.draft).toEqual([{ color: 'purple' }]);
+	});
+
+	it('child stays attached even when the parent reassigns the parent path', () => {
+		const engine = new Engine<any>({ cars: [{ color: 'red' }] });
+		const cars = engine.getNodeEngine('$.cars');
+
+		// wholesale replace of the cars subtree from the parent
+		engine.replace('$.cars', [{ color: 'blue' }]);
+
+		expect(cars.draft).toEqual([{ color: 'blue' }]);
+	});
+
+	it('undo through child shares history with parent', () => {
+		const engine = new Engine({
+			cars: [{ color: 'red' }],
+		});
+		const cars = engine.getNodeEngine('$.cars');
+
+		cars.replace('$[0].color', 'blue');
+		expect(engine.draft.cars[0].color).toBe('blue');
+
+		// undo through the child — parent sees the rollback
+		cars.undo();
+		expect(engine.draft.cars[0].color).toBe('red');
+
+		// undo through parent reverses what the child did, too
+		cars.replace('$[0].color', 'green');
+		engine.undo();
+		expect(cars.draft[0].color).toBe('red');
+	});
+
+	it('accept on a child scopes to its subtree', () => {
+		const engine = new Engine({
+			cars: [{ color: 'red' }],
+			trucks: [{ color: 'red' }],
+		});
+		const cars = engine.getNodeEngine('$.cars');
+
+		cars.replace('$[0].color', 'yellow');
+		engine.replace('$.trucks[0].color', 'orange');
+
+		cars.accept(); // commits ONLY the cars subtree
+
+		expect(engine.base).toEqual({
+			cars: [{ color: 'yellow' }],
+			trucks: [{ color: 'red' }], // not committed
+		});
+		expect(engine.draft).toEqual({
+			cars: [{ color: 'yellow' }],
+			trucks: [{ color: 'orange' }], // still pending
+		});
+	});
+
+	it('diff on a child is scoped to its subtree', () => {
+		const engine = new Engine({
+			cars: [{ color: 'red' }],
+			trucks: [{ color: 'red' }],
+		});
+		const cars = engine.getNodeEngine('$.cars');
+
+		cars.replace('$[0].color', 'blue');
+		engine.replace('$.trucks[0].color', 'green');
+
+		// parent sees both changes
+		expect(engine.diff()).toHaveLength(2);
+
+		// child sees only its own, with paths relative to its root
+		expect(cars.diff()).toEqual([
+			{ op: 'replace', path: "$[0]['color']", oldValue: 'red', value: 'blue' },
+		]);
+	});
+
+	it('query returns matching values across the whole document', () => {
+		const engine = new Engine({
+			cars: [{ color: 'red', model: 'sedan' }, { color: 'blue', model: 'suv' }],
+			trucks: [{ color: 'red', model: 'pickup' }, { color: 'green', model: 'box' }],
+		});
+
+		const reds = engine.query('$..*[?@.color == "red"]');
+		expect(reds).toHaveLength(2);
+		expect(reds).toEqual(expect.arrayContaining([
+			{ color: 'red', model: 'sedan' },
+			{ color: 'red', model: 'pickup' },
+		]));
+	});
+
+	it('query on a child scopes to that subtree', () => {
+		const engine = new Engine({
+			cars: [{ color: 'red' }, { color: 'blue' }],
+			trucks: [{ color: 'red' }, { color: 'green' }],
+		});
+		const cars = engine.getNodeEngine('$.cars');
+
+		const reds = cars.query('$[?@.color == "red"]');
+		expect(reds).toEqual([{ color: 'red' }]); // no trucks
+	});
+
+	it('getNodeEngine throws when the path does not resolve to exactly one node', () => {
+		const engine = new Engine({ cars: [{}, {}] });
+		expect(() => engine.getNodeEngine('$.cars[*]')).toThrow();
+		expect(() => engine.getNodeEngine('$.missing')).toThrow();
+	});
+});
