@@ -426,6 +426,13 @@ patchwork/angular    observeValue, observeDiff, observeExport
 - [DESIGN.md](docs/DESIGN.md) — design decisions
 - [SCENARIOS.md](docs/SCENARIOS.md) — test scenarios
 
+## Contributors
+
+- **Max** ([@maxjay](https://github.com/maxjay)) — creator and maintainer
+- **Beth Grant** — v2 engine core: add/replace logic, diff, accept/decline, query resolution, unit tests
+- **Hanqi Zhou** — v2 engine core: undo/redo stack, delete, revert
+- **George Wright** — v2 engine core: move/copy, import/export
+
 ## License
 
 Apache-2.0
