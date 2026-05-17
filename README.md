@@ -428,10 +428,10 @@ patchwork/angular    observeValue, observeDiff, observeExport
 
 ## Contributors
 
-- **Max** ([@maxjay](https://github.com/maxjay)) — creator and maintainer
-- **Beth Grant** — v2 engine core: add/replace logic, diff, accept/decline, query resolution, unit tests
-- **Hanqi Zhou** — v2 engine core: undo/redo stack, delete, revert
-- **George Wright** — v2 engine core: move/copy, import/export
+- [Max](https://github.com/maxjay)
+- Beth Grant
+- Hanqi Zhou
+- George Wright
 
 ## License
 
