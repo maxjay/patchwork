@@ -55,14 +55,31 @@ function isUnderPrefix(fullPath: string, prefix: string): boolean {
 }
 
 function rebaseDiffOp(op: DiffOp, prefix: string): DiffOp {
-	if (op.op === OpType.Move || op.op === OpType.Copy) {
-		return { ...op, from: rebasePath(op.from, prefix), to: rebasePath(op.to, prefix) };
+	// Switch (rather than if/else with spread) so TypeScript narrows the union
+	// cleanly through each branch — spreading `op` doesn't preserve narrowing.
+	switch (op.op) {
+		case OpType.Move:
+		case OpType.Copy:
+			return { ...op, from: rebasePath(op.from, prefix), to: rebasePath(op.to, prefix) };
+		case OpType.Add:
+		case OpType.Replace:
+		case OpType.Remove:
+		case OpType.Revert:
+			return { ...op, path: rebasePath(op.path, prefix) };
 	}
-	return { ...op, path: rebasePath(op.path, prefix) };
 }
 
 function opPath(op: DiffOp): string {
-	return op.op === OpType.Move || op.op === OpType.Copy ? op.from : op.path;
+	switch (op.op) {
+		case OpType.Move:
+		case OpType.Copy:
+			return op.from;
+		case OpType.Add:
+		case OpType.Replace:
+		case OpType.Remove:
+		case OpType.Revert:
+			return op.path;
+	}
 }
 
 // In-place write at a non-root path against any target object. Used by
@@ -557,7 +574,6 @@ export class Engine<T extends JsonValue = JsonValue> {
 		// so we can just create them all in one go.
 		// So C is created as an array since the next segment is an index
 		// And then at that index we create the object
-		console.log(segments);
 		let current: any = this.draft;
 		for (let i = 0; i < segments.length - 1; i++) {
 			const segment = segments[i];
@@ -775,23 +791,3 @@ export class NodeEngine<T extends JsonValue = JsonValue> {
 		return this.parent.getNodeEngine<U>(joinPath(this.prefix, jsonPath));
 	}
 }
-
-// Test
-const engine = new Engine<any>({ a: { b: 3 } });
-engine.add('$.a.b.c[0].d', 5);
-console.log(engine.draft);
-console.log(engine.draft.a.b.c[0].d);
-engine.add('$.a.b', 3);
-console.log(engine.draft);
-engine.add('$.a.b', []);
-engine.add('$.a.b[0]', 2);
-engine.add('$.a.b[0]', 1);
-engine.add('$.a.b[0]', 0);
-console.log(engine.draft);
-engine.move('$.a.b[1]', '$.a.c');
-console.log(engine.draft);
-engine.copy('$.a.c', '$.a.b[*]');
-console.log(engine.draft);
-
-console.log(engine.diff());
-console.log(engine.exportChanges());

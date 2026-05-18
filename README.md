@@ -1,430 +1,256 @@
 <p align="center">
   <h1 align="center">patchwork</h1>
-  <p align="center">The editing engine for structured configuration data.</p>
+  <p align="center">A JSON editing engine with base/draft, diff, undo, and scoped lenses.</p>
 </p>
 
 <p align="center">
   <a href="#motivation">Motivation</a> &middot;
   <a href="#install">Install</a> &middot;
   <a href="#how-it-works">How it works</a> &middot;
-  <a href="#react">React</a> &middot;
-  <a href="#ai-integration">AI integration</a> &middot;
+  <a href="#nested-engines">Nested engines</a> &middot;
+  <a href="#llm-tools">LLM tools</a> &middot;
   <a href="#api">API</a>
 </p>
 
 ---
 
-<!-- TODO: Record a demo GIF showing: user edits config fields, validation errors appear inline,
-     the pending-changes panel updates live, undo/redo buttons toggle.
-     Place it here: ![patchwork demo](demo.gif) -->
-
 ## Motivation
 
-Building a configuration editor, settings panel, or any UI that lets users edit structured data means wiring up everything the real experience needs:
+Building a config editor, settings panel, or any UI over structured data means wiring up:
 
-- **What changed?** — Which fields differ from the original, and what were the old values?
-- **Is it valid?** — Reject a bad port number before it corrupts the document.
-- **Undo/redo** — Not just the last action. The whole session, including through a save.
-- **A "review your changes" panel** — Show the user the diff before they commit.
+- **What's changed?** — A diff between the saved state and the current edit.
+- **Undo/redo** — Across every operation, surviving saves.
+- **Review before commit** — Let the user (or you) inspect pending changes before they land.
 
-That is four separate systems to build and keep in sync. Patchwork replaces all of them.
-
-You hand it your document and its JSON Schema. Every edit flows through `propose()` — validated immediately, tracked automatically, undoable forever. At any moment you can read `diff()` to see exactly what has changed from the base and render it however you like. One primitive, zero boilerplate.
-
-And if you want to add an AI copilot — an assistant that proposes changes the user reviews before accepting — that is built on the same engine. Same undo stack, same diff, same validation. It is not bolted on.
+Patchwork wraps a JSON document in an `Engine` that holds two views — `base` (committed) and `draft` (working) — and a stream of reversible operations. That single primitive covers all three concerns.
 
 ## Install
 
 ```bash
-npm install patchwork
+npm install @maxjay/patchwork
 ```
 
 ## How it works
 
 ### 1. Wrap any JSON document
 
-Pass a base document and an optional [JSON Schema](https://json-schema.org/). The engine deep-copies your original and never touches it.
+Pass any JSON value. The engine takes two independent deep clones — one as `base` (the committed source of truth), one as `draft` (the working copy).
 
 ```ts
-import { Engine } from 'patchwork';
+import { Engine } from '@maxjay/patchwork';
 
-const engine = new Engine(
-  {
-    appName: 'my-service',
-    server: { host: 'localhost', port: 8080 },
-    debug: false,
-  },
-  {
-    type: 'object',
-    properties: {
-      server: {
-        type: 'object',
-        properties: {
-          host: { type: 'string' },
-          port: { type: 'integer', minimum: 1, maximum: 65535 },
-        },
-      },
-      debug: { type: 'boolean' },
-    },
-  },
-);
+const engine = new Engine({
+  server: { host: 'localhost', port: 8080 },
+  debug: false,
+});
+
+engine.base;   // { server: { host: 'localhost', port: 8080 }, debug: false }
+engine.draft;  // identical to base on construction
 ```
 
-### 2. Propose edits — validated, tracked, undoable
+### 2. Mutate the draft
 
-Every change is an op. Ops are validated against the schema before they are staged. If the op would produce an invalid document it throws and state is unchanged.
+All mutations target `draft`. `base` doesn't move until you `accept()`. Paths are [JSONPath (RFC 9535)](https://datatracker.ietf.org/doc/html/rfc9535).
 
 ```ts
-engine.propose({ kind: 'replace', path: '/server/port', value: 443 });
-engine.propose({ kind: 'add',     path: '/server/ssl',  value: true });
-engine.propose({ kind: 'remove',  path: '/debug' });
+engine.replace('$.server.port', 443);
+engine.add('$.server.ssl', true);
+engine.delete('$.debug');
 
-// invalid — throws ValidationError, nothing staged
-engine.propose({ kind: 'replace', path: '/server/port', value: 'not-a-port' });
+engine.draft;
+// { server: { host: 'localhost', port: 443, ssl: true } }
+engine.base;
+// { server: { host: 'localhost', port: 8080 }, debug: false }  — untouched
 ```
 
-### 3. See exactly what changed
+The full mutation surface: `add`, `replace`, `delete`, `move`, `copy`, `revert`.
 
-`diff()` returns every pending op in the order it was made. `getDiff()` returns the before/after for a single path. Both update the moment you propose or undo.
+### 3. See exactly what's changed
+
+`diff()` returns a flat list of structural differences between `base` and `draft`. Independent of the undo stack — `diff()` doesn't care how many times you flipped a value.
 
 ```ts
 engine.diff();
 // [
-//   { path: '/server/port', kind: 'replace', prev: 8080,  value: 443  },
-//   { path: '/server/ssl',  kind: 'add',                  value: true },
-//   { path: '/debug',       kind: 'remove',  prev: false              },
+//   { op: 'replace', path: "$['server']['port']", oldValue: 8080,  value: 443  },
+//   { op: 'add',     path: "$['server']['ssl']",  value: true },
+//   { op: 'remove',  path: "$['debug']",          value: false },
 // ]
-
-engine.getDiff('/server/port'); // { base: 8080, current: 443 }
-engine.getDiff('/appName');     // null — unchanged
 ```
 
-`diffTree()` returns the same ops organised as a nested tree — useful for building a grouped review panel.
+### 4. Undo anything
 
-### 4. Validate before committing
-
-`checkValue` is a pure function that tells you whether a value would be valid before you stage it. Use it to drive live input feedback without touching document state.
+Every mutation pushes onto a single linear undo stack. `undo()` reverses; `redo()` replays.
 
 ```ts
-const error = engine.checkValue('/server/port', userTypedValue);
-
-if (!error) {
-  // valid — show green border
-} else {
-  error.errors[0].keyword; // 'type', 'minimum', 'maximum', ...
-  error.errors[0].message; // 'must be <= 65535'
-}
+engine.undo();   // un-delete debug
+engine.undo();   // un-add ssl
+engine.redo();   // re-add ssl
 ```
 
-### 5. Undo anything
+`accept()` and `decline()` are themselves undoable — pushing save doesn't erase your history.
 
-Every propose, revert, move, and apply is a reversible action on the undo stack. Undo history survives `apply()` — pressing save does not erase your undo stack.
+### 5. Read values
 
 ```ts
-engine.undo();   // removes /server/ssl add
-engine.undo();   // reverts /server/port back to 8080
-engine.redo();   // port back to 443
-
-engine.apply();  // fold ops into base — diff resets, undo stack lives on
-engine.undo();   // undo the apply itself
-```
-
-`revert(path)` removes a specific change without touching the rest of the stack — useful for a per-row "discard this change" button in a diff panel.
-
-### 6. Apply when ready
-
-`apply()` folds all pending ops into the base. The diff clears. The undo stack does not. It works exactly like Cmd+S in a document editor.
-
-```ts
-engine.apply();
-engine.diff();    // [] — clean slate
-engine.undo();    // undo the apply — ops come back, diff returns
-```
-
----
-
-## React
-
-Patchwork ships reactive hooks for React 18. Every hook subscribes at the path level — a component reading `/server/port` will not re-render when `/server/host` changes.
-
-```tsx
-import {
-  useEngine,
-  useValue,
-  useDiff,
-  useNode,
-  useExport,
-  useCanUndo,
-  useCanRedo,
-  usePendingDiff,
-  useFieldValidation,
-} from 'patchwork/react';
-```
-
-**Read values**
-
-```tsx
-const port    = useValue<number>(engine, '/server/port'); // re-renders only when port changes
-const diff    = useDiff(engine, '/server/port');           // { base, current } | null
-const node    = useNode(engine, '/server');                // NodeInfo — keys, type, changed
-const doc     = useExport(engine);                         // full document, reactive
-```
-
-**Drive undo/redo buttons**
-
-```tsx
-const canUndo = useCanUndo(engine);
-const canRedo = useCanRedo(engine);
-
-<button disabled={!canUndo} onClick={() => engine.undo()}>Undo</button>
-<button disabled={!canRedo} onClick={() => engine.redo()}>Redo</button>
-```
-
-**Pending changes panel**
-
-```tsx
-const pending = usePendingDiff(engine);
-// Op[] — every changed path, in proposal order
-
-{pending.map(op => (
-  <div key={op.path}>
-    <code>{op.path}</code>
-    <span>{String(op.prev)} → {String(op.value)}</span>
-    <button onClick={() => engine.revert(op.path)}>Discard</button>
-  </div>
-))}
-```
-
-**Inline field validation**
-
-```tsx
-function PortField({ engine }) {
-  const [draft, setDraft] = useState('');
-  const error = useFieldValidation(engine, '/server/port', Number(draft));
-
-  return (
-    <>
-      <input
-        value={draft}
-        onChange={e => setDraft(e.target.value)}
-        style={{ borderColor: error ? 'red' : 'green' }}
-        onBlur={() => {
-          if (!error) engine.propose({ kind: 'replace', path: '/server/port', value: Number(draft) });
-        }}
-      />
-      {error && <p>{error.errors[0].message}</p>}
-    </>
-  );
-}
-```
-
-**Create an engine in a component**
-
-```tsx
-// create + subscribe in one call
-const engine = useEngine(config, schema);
-
-// or subscribe to an engine you created outside React
-useEngineState(engine);
-```
-
----
-
-## Other framework bindings
-
-Reactive, per-path subscriptions in Vue, Svelte, and Angular.
-
-<table>
-<tr><td><b>Vue 3</b></td><td><b>Svelte</b></td></tr>
-<tr>
-<td>
-
-```ts
-import { useEngine, useValue }
-  from 'patchwork/vue';
-
-const { engine } = useEngine(config, schema);
-const port = useValue<number>(
-  engine, '/server/port'
-);
-// port.value is reactive
-```
-
-</td>
-<td>
-
-```svelte
-<script>
-import { createEngine, valueStore }
-  from 'patchwork/svelte';
-
-const { engine } = createEngine(config, schema);
-const port = valueStore(engine, '/server/port');
-</script>
-
-<input value={$port} />
-```
-
-</td>
-</tr>
-<tr><td><b>Angular</b></td><td></td></tr>
-<tr>
-<td>
-
-```ts
-import { observeValue }
-  from 'patchwork/angular';
-
-// works with async pipe and toSignal()
-readonly port = toSignal(
-  observeValue(engine, '/server/port')
-);
-```
-
-No `@angular/core` dep — just `Subscribable`.
-
-</td>
-<td></td>
-</tr>
-</table>
-
-Each binding mirrors the React surface: `useValue`/`valueStore`/`observeValue`, `useDiff`/`diffStore`/`observeDiff`, `useExport`/`exportStore`/`observeExport`.
-
----
-
-## AI integration
-
-The copilot layer is built on top of the core engine. An AI proposes changes into a separate review layer — they are visible in the UI but not yet in the document. The user approves or declines each one. Approved proposals land in the user's own undo stack, so `engine.undo()` can roll them back like any other edit.
-
-```ts
-const copilot = engine.startCopilot();
-
-// AI proposes — changes are held, not applied
-copilot.propose({ kind: 'replace', path: '/server/host', value: '0.0.0.0' });
-copilot.propose({ kind: 'replace', path: '/server/port', value: 443 });
-copilot.propose({ kind: 'add',     path: '/server/ssl',  value: true });
-
-// review the proposals
-copilot.diff();
+engine.getValue('$.server.port');  // 443
+engine.get('$.server.*');
 // [
-//   { path: '/server/host', kind: 'replace', prev: 'localhost', value: '0.0.0.0' },
-//   { path: '/server/port', kind: 'replace', prev: 8080,        value: 443       },
-//   { path: '/server/ssl',  kind: 'add',                        value: true      },
+//   { path: "$['server']['host']", value: 'localhost' },
+//   { path: "$['server']['port']", value: 443 },
+//   { path: "$['server']['ssl']",  value: true },
 // ]
-
-copilot.approve('/server/port');   // accept
-copilot.approve('/server/ssl');    // accept
-copilot.decline('/server/host');   // reject — keep localhost
-
-copilot.end();
 ```
 
-The user and the AI can edit simultaneously. When their edits overlap, the user's action always wins ("user is king"). If they edit the same path, the AI proposal is auto-declined. If the user edits a child of an AI-proposed parent, the parent is auto-accepted. The engine resolves it — no conflict dialogs needed.
+- `getValue` is **strict**: throws an `Error` on multi-match, throws `undefined` itself when nothing resolves. Designed for binding to a single field (e.g. an Angular signal or React state).
+- `get` always returns `Array<{ path, value }>` — `[]` when nothing matches. The path comes back in normalized form so you can feed it straight into `replace`/`delete`/etc.
 
-### Tool definitions (`patchwork/tools`)
-
-Framework-neutral tool definitions that plug into any LLM API (Anthropic, OpenAI, Vercel AI SDK, local models).
+### 6. Commit or discard
 
 ```ts
-import { createEditTools } from 'patchwork/tools';
+engine.accept();
+// base ← clone(draft).  base now matches the current draft.
 
-const tools = createEditTools(engine);
-// 11 tools: start_session, end_session, propose, move, get_value,
-//           get_diff, approve, decline, approve_all, decline_all, export
+engine.decline();
+// draft ← clone(base).  pending edits thrown away.
 ```
 
-### MCP server (`patchwork/mcp`)
+Both are reversible via `undo()`.
 
-A ready-to-connect MCP server over stdio for Claude Desktop, Cursor, Claude Code, or any MCP client.
+### 7. Export & replay history
 
 ```ts
-import { createMcpServer } from 'patchwork/mcp';
+const ops = engine.exportChanges();
+// DiffOp[] — the operations recorded on the undo stack
 
-const { server, connect } = createMcpServer(engine);
-await connect();
+const replay = new Engine(originalDoc);
+replay.importChanges(ops);
+// replay.draft is now identical to engine.draft
 ```
 
-Exposes all 11 tools plus two resources:
-- `config://document` — current document state
-- `config://base` — original document before any edits
+## Nested engines
 
----
+`getNodeEngine(path)` returns a scoped lens — a child `NodeEngine` rooted at the given subtree. The child owns no state of its own; reads resolve through the parent on every access, and writes forward to the parent with paths rewritten into the parent's frame. **Mutations through either side are visible in both** — they're the same physical state.
+
+```ts
+const engine = new Engine({
+  cars:   [{ color: 'red' }, { color: 'blue' }],
+  trucks: [{ color: 'red' }, { color: 'green' }],
+});
+
+const cars = engine.getNodeEngine('$.cars');
+
+cars.replace('$[0].color', 'yellow');
+
+engine.draft.cars[0].color;  // 'yellow' — parent sees it
+cars.draft[0].color;          // 'yellow' — child sees it
+```
+
+Subtree-scoped behavior on the lens:
+
+- `cars.diff()` returns only ops touching the cars subtree, with paths relative to `$`.
+- `cars.accept()` commits **only** the cars subtree into `base`. Trucks-side pending edits stay pending.
+- `cars.undo()` and `cars.redo()` delegate to the parent — there's one shared history.
+
+The child stays attached even if the parent reassigns the subtree:
+
+```ts
+engine.replace('$.cars', [{ color: 'purple' }]);
+cars.draft;  // [{ color: 'purple' }] — still working
+```
+
+### Cross-subtree search
+
+Use the parent for queries that span multiple subtrees:
+
+```ts
+engine.get('$..*[?@.color == "red"]');
+// returns every red — both cars and trucks
+```
+
+## LLM tools
+
+`createEngineTools` builds a framework-neutral set of tool definitions an LLM can call. Each tool has a `name`, `description`, JSON Schema `inputSchema`, and an `execute` function bound to the engine you pass in.
+
+```ts
+import { createEngineTools } from '@maxjay/patchwork/tools';
+
+const tools = createEngineTools(engine);
+// 9 tools: add, replace, delete, move, copy, revert, get, getValue, diff
+```
+
+Wrap these for whichever LLM SDK you're using (Anthropic, OpenAI, MCP, etc.) — the core stays SDK-agnostic.
+
+**Scope an LLM to a subtree** by passing a `NodeEngine`:
+
+```ts
+const cars = engine.getNodeEngine('$.cars');
+const tools = createEngineTools(cars);
+// the LLM can only edit cars — trucks are out of reach by construction
+```
+
+`accept`, `decline`, `undo`, and `redo` are deliberately **not** exposed as tools. The base/draft split exists so that the AI writes to draft and a human commits — exposing accept to the model would collapse that boundary.
 
 ## API
 
 ### `Engine<T>`
 
-| Method / property | Description |
+| Member | Description |
 |---|---|
-| `new Engine(base, schema?)` | Wrap any JSON object; optional JSON Schema for validation |
-| `.propose(op)` | `add` / `remove` / `replace` — throws `ValidationError` if schema rejects |
-| `.move(from, to)` | Rename or relocate (one undo step) |
-| `.revert(path)` | Remove op at path + descendants (one undo step) |
-| `.reset(path)` | Restore path to base value regardless of op structure |
-| `.undo()` / `.redo()` | Action-level undo/redo |
-| `.canUndo` / `.canRedo` | Boolean — use to drive undo/redo buttons |
-| `.diff()` | Pending ops, flat, insertion order |
-| `.diffTree()` | Pending ops as nested tree by path |
-| `.get(path)` | Current value (all layers) |
-| `.getBase(path)` | Value from base only |
-| `.getDiff(path)` | `{ base, current }` or `null` |
-| `.export()` | Full current state as deep copy |
-| `.apply()` | Fold ops into base — diff resets, undo survives |
-| `.checkValue(path, value)` | Pure validity check — `null` if valid, `ValidationError` if not |
-| `.onChange(fn)` | Subscribe to any change; returns unsubscribe fn |
-| `.startCopilot()` | Open a copilot review session |
-| `.version` | Monotonic counter — increments on every change |
+| `new Engine(base)` | Wrap a JSON value. Independent clones taken for `base` and `draft`. |
+| `.base` / `.draft` | Public fields. Read either to inspect state. |
+| `.add(path, value)` | Splice into arrays, set on objects. Creates intermediate objects/arrays for literal paths. |
+| `.replace(path, value)` | Replace the value(s) at path. Supports wildcards. |
+| `.delete(path)` | Remove at path. |
+| `.move(from, to)` | Move from one path to another. Source must resolve to exactly one node. |
+| `.copy(from, to)` | Copy from one path to another. |
+| `.revert(path)` | Reset draft at path to whatever base has there. |
+| `.get(path)` | `Array<{ path, value }>` — every match in draft, with normalized paths. |
+| `.getValue(path)` | Strict single-match read. Throws `Error` on multi-match; throws `undefined` on no-match. |
+| `.diff()` | `DiffOp[]` — structural diff between base and draft. |
+| `.undo()` / `.redo()` | Reverse / replay the last operation. |
+| `.accept()` | Promote draft into base. Reversible. |
+| `.decline()` | Reset draft from base. Reversible. |
+| `.exportChanges()` | `DiffOp[]` — the operations currently on the undo stack. |
+| `.importChanges(ops)` | Apply a `DiffOp[]` stream. |
+| `.getNodeEngine<U>(path)` | Scoped lens onto a subtree. Throws if path doesn't resolve to exactly one node. |
 
-### `CopilotSession`
+### `NodeEngine<T>`
 
-| Method | Description |
-|---|---|
-| `.propose(op)` | Propose for review |
-| `.move(from, to)` | Propose a move |
-| `.diff()` | Proposals with `conflictsWithUser` flags |
-| `.approve(path)` | Accept one proposal |
-| `.decline(path)` | Reject one proposal |
-| `.approveAll()` | Accept all + close session |
-| `.declineAll()` | Reject all + close session |
-| `.end()` | Close session (unreviewed proposals are dropped) |
+Same shape as `Engine` with scoped semantics:
 
-### React hooks (`patchwork/react`)
+- `accept` / `decline` act on the lens's subtree only.
+- `diff` returns ops with paths relative to the lens's root.
+- `undo` / `redo` delegate to the parent's stack — there's one shared history.
+- `getNodeEngine` on a lens composes by joining paths against the root engine.
 
-| Hook | Returns |
-|---|---|
-| `useEngine(base, schema?)` | `Engine` — creates and subscribes |
-| `useEngineState(engine)` | `void` — subscribe an existing engine |
-| `useValue<V>(engine, path)` | `V` — reactive value at path |
-| `useDiff(engine, path)` | `{ base, current } \| null` |
-| `useNode(engine, path)` | `NodeInfo \| null` |
-| `useExport<T>(engine)` | `T` — full document |
-| `useCanUndo(engine)` | `boolean` |
-| `useCanRedo(engine)` | `boolean` |
-| `usePendingDiff(engine)` | `Op[]` — all pending changes |
-| `useFieldValidation(engine, path, value)` | `ValidationError \| null` |
+### `createEngineTools(engine)` *(from `@maxjay/patchwork/tools`)*
+
+Returns 9 `Tool` objects (`add`, `replace`, `delete`, `move`, `copy`, `revert`, `get`, `getValue`, `diff`). Accepts any `EngineLike` — both `Engine` and `NodeEngine` satisfy it structurally.
+
+```ts
+interface Tool<TInput = Record<string, unknown>, TOutput = unknown> {
+  name: string;
+  description: string;
+  inputSchema: object;             // JSON Schema
+  execute(input: TInput): TOutput;
+}
+```
 
 ### Paths
 
-[JSON Pointers (RFC 6901)](https://datatracker.ietf.org/doc/html/rfc6901) — `/server/port`, `/items/0`, `/-` (append to array).
+[JSONPath (RFC 9535)](https://datatracker.ietf.org/doc/html/rfc9535) via [`jsonpath-rfc9535`](https://www.npmjs.com/package/jsonpath-rfc9535). Examples:
+
+- `$.server.port` — literal
+- `$.items[*]` — wildcard
+- `$..*[?@.color == "red"]` — recursive descent with filter
 
 ### Entrypoints
 
 ```
-patchwork            Engine, CopilotSession, types, errors
-patchwork/tools      Tool definitions for any LLM API
-patchwork/mcp        MCP server (JSON-RPC, stdio)
-patchwork/react      useEngine, useValue, useDiff, useNode, useExport,
-                     useCanUndo, useCanRedo, usePendingDiff, useFieldValidation
-patchwork/vue        useEngine, useValue, useDiff, useExport
-patchwork/svelte     createEngine, valueStore, diffStore, exportStore
-patchwork/angular    observeValue, observeDiff, observeExport
+@maxjay/patchwork         Engine, NodeEngine, DiffOp, OpType
+@maxjay/patchwork/tools   createEngineTools, Tool, EngineLike
 ```
-
-## Docs
-
-- [SPEC.md](docs/SPEC.md) — full specification
-- [DESIGN.md](docs/DESIGN.md) — design decisions
-- [SCENARIOS.md](docs/SCENARIOS.md) — test scenarios
 
 ## Contributors
 
