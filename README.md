@@ -255,9 +255,9 @@ interface Tool<TInput = Record<string, unknown>, TOutput = unknown> {
 ## Contributors
 
 - [Max](https://github.com/maxjay)
-- Beth Grant
-- Hanqi Zhou
-- George Wright
+- [Beth Grant](https://github.com/bethGrant)
+- [Hanqi Zhou](https://github.com/hanqi-zhou)
+- [George Wright](https://github.com/wrightg42)
 
 ## License
 

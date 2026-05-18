@@ -39,9 +39,9 @@
   ],
   "author": "Max <maxjay2000@gmail.com>",
   "contributors": [
-    { "name": "Beth Grant", "email": "bethgrant@live.co.uk" },
-    { "name": "Hanqi Zhou", "email": "hz645@cornell.edu" },
-    { "name": "George Wright", "email": "wrightgeorge42@gmail.com" }
+    { "name": "Beth Grant", "email": "bethgrant@live.co.uk", "url": "https://github.com/bethGrant" },
+    { "name": "Hanqi Zhou", "email": "hz645@cornell.edu", "url": "https://github.com/hanqi-zhou" },
+    { "name": "George Wright", "email": "wrightgeorge42@gmail.com", "url": "https://github.com/wrightg42" }
   ],
   "license": "Apache-2.0",
   "bugs": {
