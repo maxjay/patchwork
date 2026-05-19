@@ -108,6 +108,7 @@ export class Engine<T extends JsonValue = JsonValue> {
 	// because you can't branch history — the redo path is abandoned.
 	private undoStack: Operation[] = [];
 	private redoStack: Operation[] = [];
+	private ephemeralStart = -1;
 
 	constructor(base: T) {
 		this.base = structuredClone(base);
@@ -121,6 +122,7 @@ export class Engine<T extends JsonValue = JsonValue> {
 	}
 
 	undo(): void {
+		if (this.undoStack.length === this.ephemeralStart) return;
 		const op = this.undoStack.pop();
 		if (op) {
 			op.undo();
@@ -134,6 +136,30 @@ export class Engine<T extends JsonValue = JsonValue> {
 			op.redo();
 			this.undoStack.push(op);
 		}
+	}
+
+	beginEphemeral(): void {
+		if (this.ephemeralStart !== -1) throw new Error('beginEphemeral: already in an ephemeral session');
+		this.ephemeralStart = this.undoStack.length;
+	}
+
+	commitEphemeral(): void {
+		if (this.ephemeralStart === -1) throw new Error('commitEphemeral: not in an ephemeral session');
+		const ops = this.undoStack.splice(this.ephemeralStart);
+		this.ephemeralStart = -1;
+		if (ops.length === 0) return;
+		this.pushOperation({
+			undo: () => { for (let i = ops.length - 1; i >= 0; i--) ops[i].undo(); },
+			redo: () => { for (const op of ops) op.redo(); },
+		});
+	}
+
+	discardEphemeral(): void {
+		if (this.ephemeralStart === -1) throw new Error('discardEphemeral: not in an ephemeral session');
+		const ops = this.undoStack.splice(this.ephemeralStart);
+		this.ephemeralStart = -1;
+		for (let i = ops.length - 1; i >= 0; i--) ops[i].undo();
+		this.redoStack = [];
 	}
 
 	// Promotes the current draft to base. After accept(), base equals draft.

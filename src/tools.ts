@@ -39,8 +39,13 @@ const jsonValueField = {
 // Returns a tool set bound to the given engine (or scoped NodeEngine).
 // Tools deliberately exclude accept/decline/undo/redo — committing or
 // rewinding the draft is the human's decision in v2.
-export function createEngineTools(engine: EngineLike): Tool[] {
-	return [
+type EphemeralEngineLike = EngineLike & {
+	beginEphemeral(): void;
+	commitEphemeral(): void;
+};
+
+export function createEngineTools(engine: EngineLike, options?: { includeEphemeral?: boolean }): Tool[] {
+	const tools: Tool[] = [
 		{
 			name: 'add',
 			description:
@@ -168,4 +173,30 @@ export function createEngineTools(engine: EngineLike): Tool[] {
 			execute: (_input: Record<string, never>) => engine.diff(),
 		},
 	];
+
+	if (options?.includeEphemeral) {
+		const e = engine as EphemeralEngineLike;
+		tools.push(
+			{
+				name: 'beginEphemeral',
+				description:
+					'Start an ephemeral session. Subsequent mutations update the draft immediately and ' +
+					'are individually undoable within the session, but will be collapsed into a single ' +
+					'undo entry when commitEphemeral is called. Use for streaming: call once before the ' +
+					'first chunk, replace the target field on each chunk, then call commitEphemeral.',
+				inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+				execute: (_input: Record<string, never>) => { e.beginEphemeral(); return { ok: true }; },
+			},
+			{
+				name: 'commitEphemeral',
+				description:
+					'End the ephemeral session. All mutations since beginEphemeral are collapsed into ' +
+					'one undo entry — the human can undo the entire session in a single step.',
+				inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+				execute: (_input: Record<string, never>) => { e.commitEphemeral(); return { ok: true }; },
+			},
+		);
+	}
+
+	return tools;
 }

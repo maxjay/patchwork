@@ -159,3 +159,52 @@ describe('createEngineTools — schema shape', () => {
 		});
 	});
 });
+
+describe('createEngineTools — ephemeral tools', () => {
+	it('ephemeral tools absent by default', () => {
+		const names = createEngineTools(new Engine({})).map(t => t.name);
+		expect(names).not.toContain('beginEphemeral');
+		expect(names).not.toContain('commitEphemeral');
+	});
+
+	it('ephemeral tools present with includeEphemeral: true', () => {
+		const names = createEngineTools(new Engine({}), { includeEphemeral: true }).map(t => t.name);
+		expect(names.slice(-2)).toEqual(['beginEphemeral', 'commitEphemeral']);
+	});
+
+	it('beginEphemeral tool starts session; mutations are individually undoable', () => {
+		const e = new Engine({ a: 1 });
+		const tools = createEngineTools(e, { includeEphemeral: true });
+		toolByName(tools, 'beginEphemeral').execute({});
+		toolByName(tools, 'replace').execute({ path: '$.a', value: 99 });
+		e.undo();
+		expect(e.draft).toEqual({ a: 1 });
+	});
+
+	it('commitEphemeral tool commits; undo restores pre-session draft', () => {
+		const e = new Engine({ a: 1 });
+		const tools = createEngineTools(e, { includeEphemeral: true });
+		toolByName(tools, 'beginEphemeral').execute({});
+		toolByName(tools, 'replace').execute({ path: '$.a', value: 99 });
+		toolByName(tools, 'replace').execute({ path: '$.a', value: 100 });
+		toolByName(tools, 'commitEphemeral').execute({});
+		e.undo();
+		expect(e.draft).toEqual({ a: 1 });
+	});
+
+	it('discardEphemeral is not exposed', () => {
+		const names = createEngineTools(new Engine({}), { includeEphemeral: true }).map(t => t.name);
+		expect(names).not.toContain('discardEphemeral');
+	});
+
+	it('ephemeral tool schemas accept empty input', () => {
+		const tools = createEngineTools(new Engine({}), { includeEphemeral: true });
+		for (const name of ['beginEphemeral', 'commitEphemeral']) {
+			expect(toolByName(tools, name).inputSchema).toMatchObject({
+				type: 'object',
+				properties: {},
+				additionalProperties: false,
+			});
+		}
+	});
+});

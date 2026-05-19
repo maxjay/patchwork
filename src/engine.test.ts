@@ -787,3 +787,165 @@ describe('Engine nesting (proposed)', () => {
 		expect(() => engine.getNodeEngine('$.missing')).toThrow();
 	});
 });
+describe('Engine.ephemeral', () => {
+	it('mutations during session update draft normally', () => {
+		const e = new Engine({ a: 1 });
+		e.beginEphemeral();
+		e.replace('$.a', 2);
+		expect(e.draft).toEqual({ a: 2 });
+	});
+
+	it('mutations during session are individually undoable', () => {
+		const e = new Engine({ a: 1 });
+		e.beginEphemeral();
+		e.replace('$.a', 2);
+		e.replace('$.a', 3);
+		e.undo();
+		expect(e.draft).toEqual({ a: 2 });
+		e.undo();
+		expect(e.draft).toEqual({ a: 1 });
+	});
+
+	it('undo at session boundary is a no-op', () => {
+		const e = new Engine({ a: 1 });
+		e.replace('$.a', 5);
+		e.beginEphemeral();
+		e.undo(); // no-op — nothing in session yet
+		expect(e.draft).toEqual({ a: 5 });
+	});
+
+	it('commitEphemeral collapses session into one undo step', () => {
+		const e = new Engine({ a: 1 });
+		e.beginEphemeral();
+		e.replace('$.a', 2);
+		e.replace('$.a', 3);
+		e.replace('$.a', 4);
+		e.commitEphemeral();
+		e.undo();
+		expect(e.draft).toEqual({ a: 1 });
+	});
+
+	it('commitEphemeral: redo re-applies the committed state', () => {
+		const e = new Engine({ a: 1 });
+		e.beginEphemeral();
+		e.replace('$.a', 99);
+		e.commitEphemeral();
+		e.undo();
+		e.redo();
+		expect(e.draft).toEqual({ a: 99 });
+	});
+
+	it('discardEphemeral restores pre-session draft', () => {
+		const e = new Engine({ a: 1 });
+		e.beginEphemeral();
+		e.replace('$.a', 2);
+		e.replace('$.a', 3);
+		e.discardEphemeral();
+		expect(e.draft).toEqual({ a: 1 });
+	});
+
+	it('discardEphemeral leaves no stack entry', () => {
+		const e = new Engine({ a: 1 });
+		e.replace('$.a', 5);
+		const countBefore = e.exportChanges().length;
+		e.beginEphemeral();
+		e.replace('$.a', 99);
+		e.discardEphemeral();
+		expect(e.exportChanges().length).toBe(countBefore);
+		e.undo();
+		expect(e.draft).toEqual({ a: 1 });
+	});
+
+	it('pre-session operations still undoable after commitEphemeral', () => {
+		const e = new Engine({ a: 1 });
+		e.replace('$.a', 5);
+		e.beginEphemeral();
+		e.replace('$.a', 99);
+		e.commitEphemeral();
+		e.undo();
+		e.undo();
+		expect(e.draft).toEqual({ a: 1 });
+	});
+
+	it('pre-session operations still undoable after discardEphemeral', () => {
+		const e = new Engine({ a: 1 });
+		e.replace('$.a', 5);
+		e.beginEphemeral();
+		e.replace('$.a', 99);
+		e.discardEphemeral();
+		e.undo();
+		expect(e.draft).toEqual({ a: 1 });
+	});
+
+	it('diff() reflects ephemeral changes during session', () => {
+		const e = new Engine({ a: 1 });
+		e.beginEphemeral();
+		e.replace('$.a', 99);
+		expect(e.diff()).toEqual([
+			{ op: 'replace', path: "$['a']", oldValue: 1, value: 99 },
+		]);
+	});
+
+	it('exportChanges after commitEphemeral does not include the consolidated op', () => {
+		const e = new Engine({ a: 1 });
+		e.replace('$.a', 5);
+		const countBefore = e.exportChanges().length;
+		e.beginEphemeral();
+		e.replace('$.a', 99);
+		e.replace('$.a', 100);
+		e.commitEphemeral();
+		expect(e.exportChanges().length).toBe(countBefore);
+	});
+
+	it('beginEphemeral throws if already in a session', () => {
+		const e = new Engine({});
+		e.beginEphemeral();
+		expect(() => e.beginEphemeral()).toThrow();
+	});
+
+	it('commitEphemeral throws if not in a session', () => {
+		const e = new Engine({});
+		expect(() => e.commitEphemeral()).toThrow();
+	});
+
+	it('discardEphemeral throws if not in a session', () => {
+		const e = new Engine({});
+		expect(() => e.discardEphemeral()).toThrow();
+	});
+
+	it('streaming: many replaces collapse to one undo', () => {
+		const e = new Engine({ response: '' });
+		e.beginEphemeral();
+		for (const chunk of ['h', 'he', 'hel', 'hell', 'hello']) {
+			e.replace('$.response', chunk);
+		}
+		e.commitEphemeral();
+		expect(e.draft).toEqual({ response: 'hello' });
+		e.undo();
+		expect(e.draft).toEqual({ response: '' });
+		e.redo();
+		expect(e.draft).toEqual({ response: 'hello' });
+	});
+
+	it('NodeEngine mutations during parent session are collapsed by commitEphemeral', () => {
+		const e = new Engine<any>({ cars: [{ color: 'red' }], trucks: [{ color: 'red' }] });
+		const cars = e.getNodeEngine('$.cars');
+		e.beginEphemeral();
+		cars.replace('$[0].color', 'blue');
+		cars.replace('$[0].color', 'green');
+		e.commitEphemeral();
+		expect(e.draft.cars[0].color).toBe('green');
+		e.undo();
+		expect(e.draft.cars[0].color).toBe('red');
+		expect(e.draft.trucks[0].color).toBe('red');
+	});
+
+	it('NodeEngine mutations during parent session are rolled back by discardEphemeral', () => {
+		const e = new Engine<any>({ cars: [{ color: 'red' }] });
+		const cars = e.getNodeEngine('$.cars');
+		e.beginEphemeral();
+		cars.replace('$[0].color', 'blue');
+		e.discardEphemeral();
+		expect(e.draft.cars[0].color).toBe('red');
+	});
+});
