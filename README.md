@@ -292,8 +292,8 @@ interface Tool<TInput = Record<string, unknown>, TOutput = unknown> {
 ## Contributors
 
 - [Max](https://github.com/maxjay)
-- [Beth Grant](https://github.com/bethGrant)
 - [Hanqi Zhou](https://github.com/hanqi-zhou)
+- [Beth Grant](https://github.com/bethGrant)
 - [George Wright](https://github.com/wrightg42)
 
 ## License
