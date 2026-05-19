@@ -1,12 +1,13 @@
 <p align="center">
   <h1 align="center">patchwork</h1>
-  <p align="center">A JSON editing engine with base/draft, diff, undo, and scoped lenses.</p>
+  <p align="center">A JSON editing engine with base/draft, diff, undo, ephemeral sessions, and scoped lenses.</p>
 </p>
 
 <p align="center">
   <a href="#motivation">Motivation</a> &middot;
   <a href="#install">Install</a> &middot;
   <a href="#how-it-works">How it works</a> &middot;
+  <a href="#ephemeral-sessions">Ephemeral sessions</a> &middot;
   <a href="#nested-engines">Nested engines</a> &middot;
   <a href="#llm-tools">LLM tools</a> &middot;
   <a href="#api">API</a>
@@ -128,6 +129,30 @@ replay.importChanges(ops);
 // replay.draft is now identical to engine.draft
 ```
 
+## Ephemeral sessions
+
+Some write patterns don't belong on the undo stack — streaming LLM output replacing a field on every chunk, hover previews, keystroke-level form binding. `beginEphemeral` opens a bounded session where mutations proceed normally (individually undoable within the session), and `commitEphemeral` collapses the entire session into one undo entry.
+
+```ts
+engine.beginEphemeral();
+
+for await (const chunk of stream) {
+  engine.replace('$.response', chunk);  // draft updates live; UI reflects each chunk
+}
+
+engine.commitEphemeral();
+// draft has the final value; one undo() snaps back to the pre-stream state
+```
+
+To cancel instead of commit:
+
+```ts
+engine.discardEphemeral();
+// draft restored to pre-session state; no history entry, no trace
+```
+
+Within the session, `undo()` and `redo()` work on individual steps — you can step back through intermediate values. `undo()` is a no-op at the session boundary so it can't reach pre-session history. On `commitEphemeral`, all session entries are collapsed; on `discardEphemeral`, they're unwound in reverse.
+
 ## Nested engines
 
 `getNodeEngine(path)` returns a scoped lens — a child `NodeEngine` rooted at the given subtree. The child owns no state of its own; reads resolve through the parent on every access, and writes forward to the parent with paths rewritten into the parent's frame. **Mutations through either side are visible in both** — they're the same physical state.
@@ -191,6 +216,15 @@ const tools = createEngineTools(cars);
 
 `accept`, `decline`, `undo`, and `redo` are deliberately **not** exposed as tools. The base/draft split exists so that the AI writes to draft and a human commits — exposing accept to the model would collapse that boundary.
 
+**Ephemeral tools** are opt-in for streaming use cases:
+
+```ts
+const tools = createEngineTools(engine, { includeEphemeral: true });
+// 11 tools: the base 9 + beginEphemeral, commitEphemeral
+```
+
+`discardEphemeral` is not exposed — cancelling a preview is a human decision.
+
 ## API
 
 ### `Engine<T>`
@@ -214,6 +248,9 @@ const tools = createEngineTools(cars);
 | `.exportChanges()` | `DiffOp[]` — the operations currently on the undo stack. |
 | `.importChanges(ops)` | Apply a `DiffOp[]` stream. |
 | `.getNodeEngine<U>(path)` | Scoped lens onto a subtree. Throws if path doesn't resolve to exactly one node. |
+| `.beginEphemeral()` | Open an ephemeral session. Mutations push to the stack normally but will be collapsed on commit. |
+| `.commitEphemeral()` | Close the session, collapsing all session entries into one undo/redo entry. |
+| `.discardEphemeral()` | Close the session, unwinding all session mutations with no history trace. |
 
 ### `NodeEngine<T>`
 
@@ -224,9 +261,9 @@ Same shape as `Engine` with scoped semantics:
 - `undo` / `redo` delegate to the parent's stack — there's one shared history.
 - `getNodeEngine` on a lens composes by joining paths against the root engine.
 
-### `createEngineTools(engine)` *(from `@maxjay/patchwork/tools`)*
+### `createEngineTools(engine, options?)` *(from `@maxjay/patchwork/tools`)*
 
-Returns 9 `Tool` objects (`add`, `replace`, `delete`, `move`, `copy`, `revert`, `get`, `getValue`, `diff`). Accepts any `EngineLike` — both `Engine` and `NodeEngine` satisfy it structurally.
+Returns 9 `Tool` objects (`add`, `replace`, `delete`, `move`, `copy`, `revert`, `get`, `getValue`, `diff`). Pass `{ includeEphemeral: true }` to append `beginEphemeral` and `commitEphemeral`. Accepts any `EngineLike` — both `Engine` and `NodeEngine` satisfy it structurally.
 
 ```ts
 interface Tool<TInput = Record<string, unknown>, TOutput = unknown> {
