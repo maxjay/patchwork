@@ -640,8 +640,8 @@ describe('Engine.getValue', () => {
 //     history in confusing ways.
 //   - Accept/decline: act on the child's subtree only. cars.accept() snapshots
 //     only the cars subtree of draft into the cars subtree of base.
-//   - Diff: scoped to the child. cars.diff() returns ops under the subtree,
-//     with absolute paths from $ (same frame as the parent's diff).
+//   - Diff: scoped to the child. cars.diff() returns ops with paths relative
+//     to the child's root ($), plus absolutePath for the full document path.
 //   - Multi-match paths (e.g. $.cars[*]): getNodeEngine throws — a child must
 //     resolve to a single concrete subtree.
 describe('Engine nesting (proposed)', () => {
@@ -750,9 +750,9 @@ describe('Engine nesting (proposed)', () => {
 		// parent sees both changes
 		expect(engine.diff()).toHaveLength(2);
 
-		// child sees only its own changes; paths are absolute from $
+		// child sees only its own changes; path is relative, absolutePath is the full document path
 		expect(cars.diff()).toEqual([
-			{ op: 'replace', path: "$['cars'][0]['color']", oldValue: 'red', value: 'blue' },
+			{ op: 'replace', path: "$[0]['color']", absolutePath: "$['cars'][0]['color']", oldValue: 'red', value: 'blue' },
 		]);
 	});
 
@@ -1077,12 +1077,12 @@ describe('Engine — identity-keyed array diff', () => {
 		]);
 	});
 
-	it('NodeEngine.diff() returns absolute paths', () => {
+	it('NodeEngine.diff() includes absolutePath alongside relative path', () => {
 		const e = new Engine<any>({ items: [{ id: 1, v: 'a' }] }, { schema });
 		const lens = e.getNodeEngine('$.items');
 		e.replace('$.items[0].v', 'z');
 		expect(lens.diff()).toEqual([
-			{ op: 'replace', path: "$['items'][0]['v']", oldValue: 'a', value: 'z' },
+			{ op: 'replace', path: "$[0]['v']", absolutePath: "$['items'][0]['v']", oldValue: 'a', value: 'z' },
 		]);
 	});
 });

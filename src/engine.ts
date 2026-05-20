@@ -25,11 +25,11 @@ export interface Operation {
 // expressed as a JSONPath + the relevant values. Unlike Operation, it has no
 // knowledge of history or how to reverse anything — it's purely descriptive.
 export type DiffOp =
-	| { op: OpType.Add;     path: string; value: JsonValue }
-	| { op: OpType.Replace; path: string; oldValue?: JsonValue; value: JsonValue }
-	| { op: OpType.Remove;  path: string; value?: JsonValue }
+	| { op: OpType.Add;     path: string; absolutePath?: string; value: JsonValue }
+	| { op: OpType.Replace; path: string; absolutePath?: string; oldValue?: JsonValue; value: JsonValue }
+	| { op: OpType.Remove;  path: string; absolutePath?: string; value?: JsonValue }
 	| { op: OpType.Move | OpType.Copy; from: string; to: string }
-	| { op: OpType.Revert; path: string };
+	| { op: OpType.Revert; path: string; absolutePath?: string };
 
 // Path helpers used by NodeEngine.
 //
@@ -862,13 +862,20 @@ export class NodeEngine<T extends JsonValue = JsonValue> {
 		});
 	}
 
-	// Scoped diff: filter parent's diff to ops under the prefix.
-	// Paths are absolute from $ — consistent with Engine.diff() and RFC 6902.
+	// Scoped diff: ops under the prefix with paths rebased to the child's frame.
+	// Each op also carries absolutePath so callers that need the full document
+	// path don't have to re-join it themselves.
 	diff(path?: string, options?: { key?: string }): DiffOp[] {
 		return this.parent.diff(
 			path ? joinPath(this.prefix, path) : undefined,
 			options,
-		).filter(op => isUnderPrefix(opPath(op), this.prefix));
+		)
+			.filter(op => isUnderPrefix(opPath(op), this.prefix))
+			.map(op => {
+				const rebased = rebaseDiffOp(op, this.prefix);
+				if ('path' in rebased) return { ...rebased, absolutePath: (op as any).path };
+				return rebased;
+			});
 	}
 
 	// Nested children compose by joining paths and creating a fresh lens

@@ -332,7 +332,7 @@ const tools = createEngineTools(engine, { includeEphemeral: true });
 | `.base` / `.draft` | Read the subtree from the parent's state. |
 | `.add` / `.replace` / `.delete` / `.move` / `.copy` / `.revert` | Mutations forwarded to parent with paths rewritten. |
 | `.get(path)` / `.getValue(path)` | Reads resolved in child frame, forwarded to parent. |
-| `.diff(path?, options?)` | Ops touching this subtree only. Paths are absolute from `$`, same as the parent's diff. |
+| `.diff(path?, options?)` | Ops touching this subtree only. `path` is relative to the child's `$`; each op also carries `absolutePath` with the full document path. |
 | `.accept()` | Commits this subtree into parent's base. Other subtrees unaffected. |
 | `.decline()` | Resets this subtree in parent's draft from parent's base. |
 | `.undo()` / `.redo()` | Delegate to parent — there is one shared history. |
