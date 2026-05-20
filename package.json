@@ -16,6 +16,14 @@
     "./tools": {
       "import": "./dist/tools.js",
       "types": "./dist/tools.d.ts"
+    },
+    "./chat": {
+      "import": "./dist/chat.js",
+      "types": "./dist/chat.d.ts"
+    },
+    "./mcp": {
+      "import": "./dist/mcp.js",
+      "types": "./dist/mcp.d.ts"
     }
   },
   "scripts": {
