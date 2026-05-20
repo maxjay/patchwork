@@ -114,6 +114,42 @@ engine.diff('$..*[?@.enabled]');    // ops touching any node with an 'enabled' k
 
 Resolves against both `base` and `draft` so deleted nodes are never missed.
 
+#### Identity-based array diffing
+
+By default, arrays are diffed index-by-index. Deleting an element shifts everything that follows, which produces a cascade of false `replace` ops. Declare an `x-key` on array schemas and patchwork matches elements by identity instead:
+
+```ts
+const engine = new Engine(
+  { outboundMailboxes: [{ id: 'a', name: 'Sales' }, { id: 'b', name: 'Support' }] },
+  {
+    schema: {
+      type: 'object',
+      properties: {
+        outboundMailboxes: {
+          type: 'array',
+          'x-key': 'id',          // elements matched by .id across base ↔ draft
+          items: { type: 'object' },
+        },
+      },
+    },
+  },
+);
+
+engine.delete('$.outboundMailboxes[0]');
+
+engine.diff();
+// [ { op: 'remove', path: "$['outboundMailboxes'][0]", value: { id: 'a', name: 'Sales' } } ]
+// — one op, not a cascade of replacements
+```
+
+`x-key` nests: an array inside an array can have its own key field. The engine resolves the right key at each depth automatically.
+
+For a one-off without a schema, pass `key` directly to `diff()`:
+
+```ts
+engine.diff('$.outboundMailboxes', { key: 'id' });
+```
+
 ### 4. Undo anything
 
 Every mutation pushes onto a single linear undo stack. `undo()` reverses; `redo()` replays.
@@ -278,7 +314,7 @@ const tools = createEngineTools(engine, { includeEphemeral: true });
 | `.revert(path)` | Reset draft at path to whatever base has there. Supports wildcards. |
 | `.get(path)` | `Array<{ path, value }>` — every match in draft, with normalized paths. |
 | `.getValue(path)` | Strict single-match read. Throws `Error` on multi-match; throws `undefined` on no-match. |
-| `.diff(path?)` | `DiffOp[]` — structural diff between base and draft. Optional JSONPath scopes the result. |
+| `.diff(path?, options?)` | `DiffOp[]` — structural diff between base and draft. Optional JSONPath scopes the result. Pass `{ key: 'id' }` to enable identity-based array diffing for that path. |
 | `.undo()` / `.redo()` | Reverse / replay the last operation. |
 | `.accept()` | Promote draft into base. Reversible. |
 | `.decline()` | Reset draft from base. Reversible. |
@@ -296,7 +332,7 @@ const tools = createEngineTools(engine, { includeEphemeral: true });
 | `.base` / `.draft` | Read the subtree from the parent's state. |
 | `.add` / `.replace` / `.delete` / `.move` / `.copy` / `.revert` | Mutations forwarded to parent with paths rewritten. |
 | `.get(path)` / `.getValue(path)` | Reads resolved in child frame, forwarded to parent. |
-| `.diff(path?)` | Ops touching this subtree only, paths relative to `$`. |
+| `.diff(path?, options?)` | Ops touching this subtree only. `path` is relative to the child's `$`; each op also carries `absolutePath` with the full document path. |
 | `.accept()` | Commits this subtree into parent's base. Other subtrees unaffected. |
 | `.decline()` | Resets this subtree in parent's draft from parent's base. |
 | `.undo()` / `.redo()` | Delegate to parent — there is one shared history. |

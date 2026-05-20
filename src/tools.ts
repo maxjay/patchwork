@@ -22,7 +22,7 @@ export type EngineLike = {
 	revert(path: string): void;
 	get(path: string): Array<{ path: string; value: JsonValue }>;
 	getValue(path: string): JsonValue;
-	diff(path?: string): DiffOp[];
+	diff(path?: string, options?: { key?: string }): DiffOp[];
 };
 
 // JSON Schema fragment for a JSONPath input field — reused across tools.
@@ -169,10 +169,11 @@ export function createEngineTools(engine: EngineLike, options?: { includeEphemer
 				type: 'object',
 				properties: {
 					path: { ...jsonPathField, description: 'Optional JSONPath to scope the diff to matching nodes.' },
+					key: { type: 'string', description: 'Identity key field for array elements at path. Enables semantic add/remove instead of index-based replacements.' },
 				},
 				additionalProperties: false,
 			},
-			execute: (input: { path?: string }) => engine.diff(input.path),
+			execute: (input: { path?: string; key?: string }) => engine.diff(input.path, { key: input.key }),
 		},
 	];
 

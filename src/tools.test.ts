@@ -103,6 +103,15 @@ describe('createEngineTools — read tools', () => {
 			{ op: 'replace', path: "$['a']", oldValue: 1, value: 99 },
 		]);
 	});
+
+	it('diff with key uses identity-based array matching', () => {
+		const e = new Engine<any>({ items: [{ id: 1, v: 'a' }, { id: 2, v: 'b' }] });
+		e.delete('$.items[0]');
+		const out = toolByName(createEngineTools(e), 'diff').execute({ path: '$.items', key: 'id' });
+		expect(out).toEqual([
+			{ op: 'remove', path: "$['items'][0]", value: { id: 1, v: 'a' } },
+		]);
+	});
 });
 
 describe('createEngineTools — NodeEngine scoping', () => {

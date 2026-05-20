@@ -641,7 +641,7 @@ describe('Engine.getValue', () => {
 //   - Accept/decline: act on the child's subtree only. cars.accept() snapshots
 //     only the cars subtree of draft into the cars subtree of base.
 //   - Diff: scoped to the child. cars.diff() returns ops with paths relative
-//     to the child's root ($), not the parent's.
+//     to the child's root ($), plus absolutePath for the full document path.
 //   - Multi-match paths (e.g. $.cars[*]): getNodeEngine throws — a child must
 //     resolve to a single concrete subtree.
 describe('Engine nesting (proposed)', () => {
@@ -750,9 +750,9 @@ describe('Engine nesting (proposed)', () => {
 		// parent sees both changes
 		expect(engine.diff()).toHaveLength(2);
 
-		// child sees only its own, with paths relative to its root
+		// child sees only its own changes; path is relative, absolutePath is the full document path
 		expect(cars.diff()).toEqual([
-			{ op: 'replace', path: "$[0]['color']", oldValue: 'red', value: 'blue' },
+			{ op: 'replace', path: "$[0]['color']", absolutePath: "$['cars'][0]['color']", oldValue: 'red', value: 'blue' },
 		]);
 	});
 
@@ -1002,6 +1002,87 @@ describe('Engine.diff — scoped', () => {
 		e.replace('$.debug', true);
 		expect(e.diff('$.server')).toEqual([
 			{ op: 'replace', path: "$['server']['port']", oldValue: 80, value: 443 },
+		]);
+	});
+});
+
+describe('Engine — identity-keyed array diff', () => {
+	const schema = {
+		type: 'object',
+		properties: {
+			items: { type: 'array', 'x-key': 'id', items: { type: 'object' } },
+		},
+	};
+
+	it('delete by key emits one remove, not cascading replaces', () => {
+		const e = new Engine({ items: [{ id: 1, v: 'a' }, { id: 2, v: 'b' }, { id: 3, v: 'c' }] }, { schema });
+		e.delete('$.items[0]');
+		expect(e.diff()).toEqual([
+			{ op: 'remove', path: "$['items'][0]", value: { id: 1, v: 'a' } },
+		]);
+	});
+
+	it('add by key emits one add op', () => {
+		const e = new Engine<any>({ items: [{ id: 1 }] }, { schema });
+		e.add('$.items[1]', { id: 2, v: 'new' });
+		expect(e.diff()).toEqual([
+			{ op: 'add', path: "$['items'][1]", value: { id: 2, v: 'new' } },
+		]);
+	});
+
+	it('edit within element emits replace on the changed field only', () => {
+		const e = new Engine({ items: [{ id: 1, v: 'a' }, { id: 2, v: 'b' }] }, { schema });
+		e.replace('$.items[0].v', 'z');
+		expect(e.diff()).toEqual([
+			{ op: 'replace', path: "$['items'][0]['v']", oldValue: 'a', value: 'z' },
+		]);
+	});
+
+	it('without schema falls back to index-based diff', () => {
+		const e = new Engine({ items: [{ id: 1 }, { id: 2 }] });
+		e.delete('$.items[0]');
+		expect(e.diff()).toHaveLength(2);
+	});
+
+	it('per-call key override', () => {
+		const e = new Engine({ items: [{ id: 1, v: 'a' }, { id: 2, v: 'b' }] });
+		e.delete('$.items[0]');
+		expect(e.diff('$.items', { key: 'id' })).toEqual([
+			{ op: 'remove', path: "$['items'][0]", value: { id: 1, v: 'a' } },
+		]);
+	});
+
+	it('nested x-key via schema items', () => {
+		const nestedSchema = {
+			type: 'object',
+			properties: {
+				groups: {
+					type: 'array', 'x-key': 'gid',
+					items: {
+						type: 'object',
+						properties: {
+							members: { type: 'array', 'x-key': 'uid', items: { type: 'object' } },
+						},
+					},
+				},
+			},
+		};
+		const e = new Engine(
+			{ groups: [{ gid: 1, members: [{ uid: 10 }, { uid: 20 }] }] },
+			{ schema: nestedSchema },
+		);
+		e.delete('$.groups[0].members[0]');
+		expect(e.diff()).toEqual([
+			{ op: 'remove', path: "$['groups'][0]['members'][0]", value: { uid: 10 } },
+		]);
+	});
+
+	it('NodeEngine.diff() includes absolutePath alongside relative path', () => {
+		const e = new Engine<any>({ items: [{ id: 1, v: 'a' }] }, { schema });
+		const lens = e.getNodeEngine('$.items');
+		e.replace('$.items[0].v', 'z');
+		expect(lens.diff()).toEqual([
+			{ op: 'replace', path: "$[0]['v']", absolutePath: "$['items'][0]['v']", oldValue: 'a', value: 'z' },
 		]);
 	});
 });
