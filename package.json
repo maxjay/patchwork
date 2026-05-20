@@ -1,6 +1,6 @@
 {
   "name": "@maxjay/patchwork",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "A JSON editing engine with base/draft, diff, undo, and scoped lenses.",
   "type": "module",
   "main": "dist/index.js",
@@ -16,6 +16,14 @@
     "./tools": {
       "import": "./dist/tools.js",
       "types": "./dist/tools.d.ts"
+    },
+    "./chat": {
+      "import": "./dist/chat.js",
+      "types": "./dist/chat.d.ts"
+    },
+    "./mcp": {
+      "import": "./dist/mcp.js",
+      "types": "./dist/mcp.d.ts"
     }
   },
   "scripts": {
