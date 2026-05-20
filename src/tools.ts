@@ -22,7 +22,7 @@ export type EngineLike = {
 	revert(path: string): void;
 	get(path: string): Array<{ path: string; value: JsonValue }>;
 	getValue(path: string): JsonValue;
-	diff(): DiffOp[];
+	diff(path?: string): DiffOp[];
 };
 
 // JSON Schema fragment for a JSONPath input field — reused across tools.
