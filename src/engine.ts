@@ -862,12 +862,13 @@ export class NodeEngine<T extends JsonValue = JsonValue> {
 		});
 	}
 
-	// Scoped diff: filter parent's diff to ops under the prefix, then rebase
-	// their paths into the child's frame.
-	diff(): DiffOp[] {
-		return this.parent.diff()
-			.filter(op => isUnderPrefix(opPath(op), this.prefix))
-			.map(op => rebaseDiffOp(op, this.prefix));
+	// Scoped diff: filter parent's diff to ops under the prefix.
+	// Paths are absolute from $ — consistent with Engine.diff() and RFC 6902.
+	diff(path?: string, options?: { key?: string }): DiffOp[] {
+		return this.parent.diff(
+			path ? joinPath(this.prefix, path) : undefined,
+			options,
+		).filter(op => isUnderPrefix(opPath(op), this.prefix));
 	}
 
 	// Nested children compose by joining paths and creating a fresh lens
