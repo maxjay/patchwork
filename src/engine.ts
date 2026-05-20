@@ -82,6 +82,26 @@ function opPath(op: DiffOp): string {
 	}
 }
 
+function extractKeyMap(schema: Record<string, any>, path = '$'): Map<string, string> {
+	const map = new Map<string, string>();
+	if (schema['x-key']) map.set(path, schema['x-key'] as string);
+	if (schema.properties) {
+		for (const [key, sub] of Object.entries(schema.properties)) {
+			for (const [p, k] of extractKeyMap(sub as Record<string, any>, `${path}['${key}']`))
+				map.set(p, k);
+		}
+	}
+	if (schema.items && isPlainObject(schema.items)) {
+		for (const [p, k] of extractKeyMap(schema.items as Record<string, any>, `${path}[*]`))
+			map.set(p, k);
+	}
+	return map;
+}
+
+function toPathPattern(path: string): string {
+	return path.replace(/\[\d+\]/g, '[*]');
+}
+
 // In-place write at a non-root path against any target object. Used by
 // NodeEngine.accept/decline to mutate parent.base/draft at a subtree.
 function setOnTarget(target: any, segments: (string | number)[], value: any): void {
@@ -109,10 +129,12 @@ export class Engine<T extends JsonValue = JsonValue> {
 	private undoStack: Operation[] = [];
 	private redoStack: Operation[] = [];
 	private ephemeralStart = -1;
+	private keyMap: Map<string, string> = new Map();
 
-	constructor(base: T) {
+	constructor(base: T, options?: { schema?: Record<string, any> }) {
 		this.base = structuredClone(base);
 		this.draft = structuredClone(this.base);
+		if (options?.schema) this.keyMap = extractKeyMap(options.schema);
 	}
 
 	/** @internal */
@@ -362,7 +384,23 @@ export class Engine<T extends JsonValue = JsonValue> {
 	//
 	// Independent of the undo stack: if you replace $.a twice and then undo
 	// both, diff() returns []. The stack would still have seen two operations.
-	diff(path?: string): DiffOp[] {
+	//
+	// Pass options.key to enable identity-based array diffing for the matched
+	// path without needing a schema.
+	diff(path?: string, options?: { key?: string }): DiffOp[] {
+		if (options?.key && path) {
+			const resolved = paths(this.draft, path)[0] ?? paths(this.base, path)[0];
+			if (resolved) {
+				const saved = this.keyMap;
+				this.keyMap = new Map([...this.keyMap, [resolved, options.key]]);
+				try { return this._diff(path); }
+				finally { this.keyMap = saved; }
+			}
+		}
+		return this._diff(path);
+	}
+
+	private _diff(path?: string): DiffOp[] {
 		const ops: DiffOp[] = [];
 		this.diffNode(this.base, this.draft, '$', ops);
 		if (!path) return ops;
@@ -504,8 +542,27 @@ export class Engine<T extends JsonValue = JsonValue> {
 	//   - Anything else (type mismatch, or two primitives): if they differ,
 	//     emit a 'replace'. This is the leaf case — we stop recursing here
 	//     because there's no deeper structure to compare.
+	private diffArrayByKey(
+		a: JsonValue[], b: JsonValue[],
+		path: string, key: string, ops: DiffOp[]
+	): void {
+		const aMap = new Map(a.map((item, i) => [(item as any)[key], { item, i }]));
+		const bMap = new Map(b.map((item, i) => [(item as any)[key], { item, i }]));
+
+		for (const [id, { item, i }] of aMap)
+			if (!bMap.has(id)) ops.push({ op: OpType.Remove, path: `${path}[${i}]`, value: item });
+
+		for (const [id, { item, i }] of bMap)
+			if (!aMap.has(id)) ops.push({ op: OpType.Add, path: `${path}[${i}]`, value: item });
+
+		for (const [id, { item: bItem, i: bIndex }] of bMap)
+			if (aMap.has(id)) this.diffNode(aMap.get(id)!.item, bItem, `${path}[${bIndex}]`, ops);
+	}
+
 	private diffNode(a: JsonValue, b: JsonValue, path: string, ops: DiffOp[]): void {
 		if (Array.isArray(a) && Array.isArray(b)) {
+			const key = this.keyMap.get(path) ?? this.keyMap.get(toPathPattern(path));
+			if (key) { this.diffArrayByKey(a, b, path, key, ops); return; }
 			const maxLen = Math.max(a.length, b.length);
 			for (let i = 0; i < maxLen; i++) {
 				const child = `${path}[${i}]`;
