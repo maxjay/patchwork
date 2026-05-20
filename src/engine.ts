@@ -362,10 +362,12 @@ export class Engine<T extends JsonValue = JsonValue> {
 	//
 	// Independent of the undo stack: if you replace $.a twice and then undo
 	// both, diff() returns []. The stack would still have seen two operations.
-	diff(): DiffOp[] {
+	diff(path?: string): DiffOp[] {
 		const ops: DiffOp[] = [];
 		this.diffNode(this.base, this.draft, '$', ops);
-		return ops;
+		if (!path) return ops;
+		const prefixes = [...new Set([...paths(this.draft, path), ...paths(this.base, path)])];
+		return ops.filter(op => prefixes.some(p => isUnderPrefix(opPath(op), p)));
 	}
 
 	private moveOrCopy(from: string, to: string, isMove: boolean): void {

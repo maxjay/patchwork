@@ -949,3 +949,59 @@ describe('Engine.ephemeral', () => {
 		expect(e.draft.cars[0].color).toBe('red');
 	});
 });
+
+describe('Engine.diff — scoped', () => {
+	it('diff() without args returns full diff', () => {
+		const e = new Engine<any>({ a: 1, b: 2 });
+		e.replace('$.a', 9);
+		e.replace('$.b', 9);
+		expect(e.diff()).toHaveLength(2);
+	});
+
+	it('diff(path) filters to ops under the matched prefix', () => {
+		const e = new Engine<any>({ a: 1, b: 2 });
+		e.replace('$.a', 9);
+		e.replace('$.b', 9);
+		expect(e.diff('$.a')).toEqual([
+			{ op: 'replace', path: "$['a']", oldValue: 1, value: 9 },
+		]);
+	});
+
+	it('diff(path) includes ops for deleted nodes not present in draft', () => {
+		const e = new Engine<any>({ a: 1, b: 2 });
+		e.delete('$.a');
+		expect(e.diff('$.a')).toEqual([
+			{ op: 'remove', path: "$['a']", value: 1 },
+		]);
+	});
+
+	it('diff(path) includes ops for added nodes not present in base', () => {
+		const e = new Engine<any>({ b: 2 });
+		e.add('$.a', 1);
+		expect(e.diff('$.a')).toEqual([
+			{ op: 'add', path: "$['a']", value: 1 },
+		]);
+	});
+
+	it('diff(path) with wildcard returns ops for all matching elements', () => {
+		const e = new Engine<any>({ items: [1, 2, 3] });
+		e.replace('$.items[0]', 9);
+		e.replace('$.items[2]', 9);
+		expect(e.diff('$.items[*]')).toHaveLength(2);
+	});
+
+	it('diff(path) returns empty array when path matches nothing in base or draft', () => {
+		const e = new Engine<any>({ a: 1 });
+		e.replace('$.a', 9);
+		expect(e.diff('$.missing')).toEqual([]);
+	});
+
+	it('diff(path) returns nested ops under a matched subtree', () => {
+		const e = new Engine<any>({ server: { host: 'a', port: 80 }, debug: false });
+		e.replace('$.server.port', 443);
+		e.replace('$.debug', true);
+		expect(e.diff('$.server')).toEqual([
+			{ op: 'replace', path: "$['server']['port']", oldValue: 80, value: 443 },
+		]);
+	});
+});

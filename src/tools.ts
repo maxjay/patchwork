@@ -164,13 +164,15 @@ export function createEngineTools(engine: EngineLike, options?: { includeEphemer
 		},
 		{
 			name: 'diff',
-			description: 'Return the list of structural differences between base and draft as DiffOps.',
+			description: 'Return structural differences between base and draft. Pass a JSONPath to scope the result to matching nodes only.',
 			inputSchema: {
 				type: 'object',
-				properties: {},
+				properties: {
+					path: { ...jsonPathField, description: 'Optional JSONPath to scope the diff to matching nodes.' },
+				},
 				additionalProperties: false,
 			},
-			execute: (_input: Record<string, never>) => engine.diff(),
+			execute: (input: { path?: string }) => engine.diff(input.path),
 		},
 	];
 
