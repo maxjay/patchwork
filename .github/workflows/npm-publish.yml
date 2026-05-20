@@ -4,40 +4,32 @@ on:
   release:
     types: [created]
 
+permissions:
+  contents: read
+  id-token: write
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 24
+          package-manager-cache: false
       - run: npm ci
       - run: npm test
 
   publish:
     needs: test
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
-          node-version: 20
-          registry-url: https://registry.npmjs.org/
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
       - run: npm ci
       - run: npm run build
-      - name: Get OIDC token for npm Trusted Publishers
-        id: oidc
-        run: |
-          TOKEN=$(curl -sS \
-            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://registry.npmjs.org/" | \
-            jq -r '.value')
-          echo "::add-mask::${TOKEN}"
-          echo "token=${TOKEN}" >> "${GITHUB_OUTPUT}"
-      - run: npm publish --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ steps.oidc.outputs.token }}
+      - run: npm publish
