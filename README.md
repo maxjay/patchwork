@@ -25,6 +25,8 @@ Building a config editor, settings panel, or any UI over structured data means w
 
 Patchwork wraps a JSON document in an `Engine` that holds two views — `base` (committed) and `draft` (working) — and a stream of reversible operations. That single primitive covers all three concerns.
 
+Addressing uses [JSONPath (RFC 9535)](https://datatracker.ietf.org/doc/html/rfc9535) throughout — the same standard used by `get`, `replace`, `delete`, and `diff`. Every path you write for a read works identically for a write and vice versa. Diff output follows the [JSON Patch (RFC 6902)](https://datatracker.ietf.org/doc/html/rfc6902) operation vocabulary (`add`, `replace`, `remove`, `move`, `copy`) so it maps directly onto existing patch tooling and transports.
+
 ## Install
 
 ```bash
@@ -51,7 +53,7 @@ engine.draft;  // identical to base on construction
 
 ### 2. Mutate the draft
 
-All mutations target `draft`. `base` doesn't move until you `accept()`. Paths are [JSONPath (RFC 9535)](https://datatracker.ietf.org/doc/html/rfc9535).
+All mutations target `draft`. `base` doesn't move until you `accept()`. Paths are [JSONPath (RFC 9535)](https://datatracker.ietf.org/doc/html/rfc9535) — the same expressions work for both reads and writes.
 
 ```ts
 engine.replace('$.server.port', 443);
@@ -64,29 +66,62 @@ engine.base;
 // { server: { host: 'localhost', port: 8080 }, debug: false }  — untouched
 ```
 
-The full mutation surface: `add`, `replace`, `delete`, `move`, `copy`, `revert`.
+The full mutation surface:
+
+| Method | Description |
+|---|---|
+| `.add(path, value)` | Set a key or splice into an array. Creates intermediate objects/arrays on literal paths. |
+| `.replace(path, value)` | Replace matched values. Supports wildcards — replaces all matches. |
+| `.delete(path)` | Remove at path. Shifts arrays in place. |
+| `.move(from, to)` | Move a value. Source must resolve to exactly one node. |
+| `.copy(from, to)` | Copy a value. Source must resolve to exactly one node. |
+| `.revert(path)` | Reset draft at path back to whatever `base` has there. |
+
+```ts
+engine.move('$.server.host', '$.host');
+// draft: { host: 'localhost', server: { port: 443, ssl: true } }
+
+engine.revert('$.server.port');
+// draft: { host: 'localhost', server: { port: 8080, ssl: true } }
+// only $.server.port reset — everything else untouched
+```
 
 ### 3. See exactly what's changed
 
-`diff()` returns a flat list of structural differences between `base` and `draft`. Independent of the undo stack — `diff()` doesn't care how many times you flipped a value.
+`diff()` returns a flat list of structural differences between `base` and `draft`, following the [JSON Patch (RFC 6902)](https://datatracker.ietf.org/doc/html/rfc6902) operation vocabulary. Independent of the undo stack — `diff()` doesn't care how many times you flipped a value.
 
 ```ts
 engine.diff();
 // [
-//   { op: 'replace', path: "$['server']['port']", oldValue: 8080,  value: 443  },
+//   { op: 'replace', path: "$['server']['port']", oldValue: 8080, value: 443 },
 //   { op: 'add',     path: "$['server']['ssl']",  value: true },
 //   { op: 'remove',  path: "$['debug']",          value: false },
 // ]
 ```
+
+Pass a JSONPath to scope the diff to a subtree or expression — useful for targeted change detection without creating a scoped lens:
+
+```ts
+engine.diff('$.server');
+// [
+//   { op: 'replace', path: "$['server']['port']", oldValue: 8080, value: 443 },
+//   { op: 'add',     path: "$['server']['ssl']",  value: true },
+// ]
+
+engine.diff('$.server.*');          // ops touching any direct child of server
+engine.diff('$..*[?@.enabled]');    // ops touching any node with an 'enabled' key
+```
+
+Resolves against both `base` and `draft` so deleted nodes are never missed.
 
 ### 4. Undo anything
 
 Every mutation pushes onto a single linear undo stack. `undo()` reverses; `redo()` replays.
 
 ```ts
-engine.undo();   // un-delete debug
-engine.undo();   // un-add ssl
-engine.redo();   // re-add ssl
+engine.undo();   // un-revert port
+engine.undo();   // un-move host
+engine.redo();   // re-move host
 ```
 
 `accept()` and `decline()` are themselves undoable — pushing save doesn't erase your history.
@@ -122,12 +157,14 @@ Both are reversible via `undo()`.
 
 ```ts
 const ops = engine.exportChanges();
-// DiffOp[] — the operations recorded on the undo stack
+// DiffOp[] — the typed operations on the undo stack
 
 const replay = new Engine(originalDoc);
 replay.importChanges(ops);
 // replay.draft is now identical to engine.draft
 ```
+
+`exportChanges` returns only operations that carry a `DiffOp` descriptor — structural mutations like `add`, `replace`, `delete`, etc. Operations without a descriptor (`accept`, `decline`, ephemeral session commits) are excluded.
 
 ## Ephemeral sessions
 
@@ -238,14 +275,14 @@ const tools = createEngineTools(engine, { includeEphemeral: true });
 | `.delete(path)` | Remove at path. |
 | `.move(from, to)` | Move from one path to another. Source must resolve to exactly one node. |
 | `.copy(from, to)` | Copy from one path to another. |
-| `.revert(path)` | Reset draft at path to whatever base has there. |
+| `.revert(path)` | Reset draft at path to whatever base has there. Supports wildcards. |
 | `.get(path)` | `Array<{ path, value }>` — every match in draft, with normalized paths. |
 | `.getValue(path)` | Strict single-match read. Throws `Error` on multi-match; throws `undefined` on no-match. |
-| `.diff()` | `DiffOp[]` — structural diff between base and draft. |
+| `.diff(path?)` | `DiffOp[]` — structural diff between base and draft. Optional JSONPath scopes the result. |
 | `.undo()` / `.redo()` | Reverse / replay the last operation. |
 | `.accept()` | Promote draft into base. Reversible. |
 | `.decline()` | Reset draft from base. Reversible. |
-| `.exportChanges()` | `DiffOp[]` — the operations currently on the undo stack. |
+| `.exportChanges()` | `DiffOp[]` — structural mutations on the undo stack. Excludes accept/decline/ephemeral commits. |
 | `.importChanges(ops)` | Apply a `DiffOp[]` stream. |
 | `.getNodeEngine<U>(path)` | Scoped lens onto a subtree. Throws if path doesn't resolve to exactly one node. |
 | `.beginEphemeral()` | Open an ephemeral session. Mutations push to the stack normally but will be collapsed on commit. |
@@ -254,12 +291,33 @@ const tools = createEngineTools(engine, { includeEphemeral: true });
 
 ### `NodeEngine<T>`
 
-Same shape as `Engine` with scoped semantics:
+| Member | Description |
+|---|---|
+| `.base` / `.draft` | Read the subtree from the parent's state. |
+| `.add` / `.replace` / `.delete` / `.move` / `.copy` / `.revert` | Mutations forwarded to parent with paths rewritten. |
+| `.get(path)` / `.getValue(path)` | Reads resolved in child frame, forwarded to parent. |
+| `.diff(path?)` | Ops touching this subtree only, paths relative to `$`. |
+| `.accept()` | Commits this subtree into parent's base. Other subtrees unaffected. |
+| `.decline()` | Resets this subtree in parent's draft from parent's base. |
+| `.undo()` / `.redo()` | Delegate to parent — there is one shared history. |
+| `.getNodeEngine<U>(path)` | Compose a further-scoped lens by joining paths. |
 
-- `accept` / `decline` act on the lens's subtree only.
-- `diff` returns ops with paths relative to the lens's root.
-- `undo` / `redo` delegate to the parent's stack — there's one shared history.
-- `getNodeEngine` on a lens composes by joining paths against the root engine.
+`NodeEngine` does not have `exportChanges`, `importChanges`, `beginEphemeral`, `commitEphemeral`, or `discardEphemeral`.
+
+### `DiffOp`
+
+Diff output follows the [JSON Patch (RFC 6902)](https://datatracker.ietf.org/doc/html/rfc6902) operation vocabulary:
+
+```ts
+type DiffOp =
+  | { op: 'add';            path: string; value: JsonValue }
+  | { op: 'replace';        path: string; oldValue?: JsonValue; value: JsonValue }
+  | { op: 'remove';         path: string; value?: JsonValue }
+  | { op: 'move' | 'copy';  from: string; to: string }
+  | { op: 'revert';         path: string }
+```
+
+Paths are always in normalized JSONPath form (`$['key'][0]`). `OpType` is an enum exported from the main entrypoint with string values matching the `op` field (`OpType.Add = 'add'`, etc.).
 
 ### `createEngineTools(engine, options?)` *(from `@maxjay/patchwork/tools`)*
 
@@ -276,11 +334,13 @@ interface Tool<TInput = Record<string, unknown>, TOutput = unknown> {
 
 ### Paths
 
-[JSONPath (RFC 9535)](https://datatracker.ietf.org/doc/html/rfc9535) via [`jsonpath-rfc9535`](https://www.npmjs.com/package/jsonpath-rfc9535). Examples:
+[JSONPath (RFC 9535)](https://datatracker.ietf.org/doc/html/rfc9535) via [`jsonpath-rfc9535`](https://www.npmjs.com/package/jsonpath-rfc9535). The same path expression works for reads, writes, and diffs. Examples:
 
-- `$.server.port` — literal
-- `$.items[*]` — wildcard
-- `$..*[?@.color == "red"]` — recursive descent with filter
+- `$.server.port` — literal member access
+- `$.items[2]` — literal index
+- `$.items[*]` — all array elements
+- `$..*` — recursive descent, every node
+- `$..*[?@.color == "red"]` — recursive descent with filter expression
 
 ### Entrypoints
 
