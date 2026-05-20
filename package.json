@@ -48,6 +48,9 @@
     "url": "https://github.com/maxjay/patchwork/issues"
   },
   "homepage": "https://github.com/maxjay/patchwork#readme",
+  "publishConfig": {
+    "access": "public"
+  },
   "devDependencies": {
     "@types/node": "^25.6.0",
     "typescript": "^6.0.3",
