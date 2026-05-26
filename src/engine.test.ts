@@ -1086,3 +1086,75 @@ describe('Engine — identity-keyed array diff', () => {
 		]);
 	});
 });
+
+describe('Engine — $self set diff', () => {
+	const schema = {
+		type: 'object',
+		properties: {
+			tags: { type: 'array', 'x-key': '$self', items: { type: 'string' } },
+		},
+	};
+
+	it('add to set emits one add', () => {
+		const e = new Engine<any>({ tags: ['urgent', 'review'] }, { schema });
+		e.add('$.tags[0]', 'blocked');
+		expect(e.diff()).toEqual([
+			{ op: 'add', path: "$['tags'][0]", value: 'blocked' },
+		]);
+	});
+
+	it('remove from set emits one remove, not cascading replaces', () => {
+		const e = new Engine<any>({ tags: ['urgent', 'review', 'blocked'] }, { schema });
+		e.delete('$.tags[0]');
+		expect(e.diff()).toEqual([
+			{ op: 'remove', path: "$['tags'][0]", value: 'urgent' },
+		]);
+	});
+
+	it('reorder is invisible under set semantics', () => {
+		const e = new Engine<any>({ tags: ['a', 'b', 'c'] }, { schema });
+		e.replace('$.tags', ['c', 'a', 'b']);
+		expect(e.diff()).toEqual([]);
+	});
+
+	it('duplicates collapse under set semantics', () => {
+		const e = new Engine<any>({ tags: ['urgent', 'urgent', 'review'] }, { schema });
+		e.replace('$.tags', ['urgent', 'review']);
+		expect(e.diff()).toEqual([]);
+	});
+
+	it('works on number sets', () => {
+		const numericSchema = {
+			type: 'object',
+			properties: {
+				ids: { type: 'array', 'x-key': '$self', items: { type: 'number' } },
+			},
+		};
+		const e = new Engine<any>({ ids: [1, 2, 3] }, { schema: numericSchema });
+		e.replace('$.ids', [2, 3, 4]);
+		expect(e.diff()).toEqual([
+			{ op: 'remove', path: "$['ids'][0]", value: 1 },
+			{ op: 'add', path: "$['ids'][2]", value: 4 },
+		]);
+	});
+
+	it('per-call $self override without schema', () => {
+		const e = new Engine<any>({ tags: ['a', 'b'] });
+		e.delete('$.tags[0]');
+		expect(e.diff('$.tags', { key: '$self' })).toEqual([
+			{ op: 'remove', path: "$['tags'][0]", value: 'a' },
+		]);
+	});
+
+	it('throws on object items — use x-key: <field> instead', () => {
+		const e = new Engine<any>({ tags: [{ name: 'urgent' }, { name: 'review' }] }, { schema });
+		e.replace('$.tags[0].name', 'blocked');
+		expect(() => e.diff()).toThrow(/\$self.*requires primitive items/);
+	});
+
+	it('throws on nested-array items', () => {
+		const e = new Engine<any>({ tags: [['a'], ['b']] }, { schema });
+		e.replace('$.tags[0]', ['c']);
+		expect(() => e.diff()).toThrow(/\$self.*requires primitive items/);
+	});
+});

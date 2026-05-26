@@ -559,9 +559,48 @@ export class Engine<T extends JsonValue = JsonValue> {
 			if (aMap.has(id)) this.diffNode(aMap.get(id)!.item, bItem, `${path}[${bIndex}]`, ops);
 	}
 
+	// $self set diff: the item itself is its identity. Reduces to symmetric set
+	// difference because JS Set already gives value-equality for primitives.
+	// Duplicates collapse and reorders are invisible — both are correct under
+	// the set semantics that `$self` declares.
+	//
+	// Restricted to primitive items: JS Set/Map use reference equality for
+	// objects, so `[{a:1}]` vs `[{a:1}]` would compare as fully different sets.
+	// Extending to objects requires synthesising structural identity in
+	// userland (canonical-JSON normalization or deep-equal scan); both walk
+	// the item structure, and for nearly all real schemas `x-key: '<field>'`
+	// is the cleaner answer when items have a natural ID. Tracked in #18.
+	private diffArrayBySelf(
+		a: JsonValue[], b: JsonValue[],
+		path: string, ops: DiffOp[]
+	): void {
+		for (const arr of [a, b]) {
+			for (const item of arr) {
+				if (item !== null && typeof item === 'object') {
+					throw new Error(
+						`diff: x-key '$self' at ${path} requires primitive items, got ` +
+						`${Array.isArray(item) ? 'array' : 'object'}. ` +
+						`Use x-key: '<field>' for arrays of objects. See #18.`
+					);
+				}
+			}
+		}
+		const aMap = new Map<JsonValue, number>();
+		a.forEach((item, i) => aMap.set(item, i));
+		const bMap = new Map<JsonValue, number>();
+		b.forEach((item, i) => bMap.set(item, i));
+
+		for (const [item, i] of aMap)
+			if (!bMap.has(item)) ops.push({ op: OpType.Remove, path: `${path}[${i}]`, value: item });
+
+		for (const [item, i] of bMap)
+			if (!aMap.has(item)) ops.push({ op: OpType.Add, path: `${path}[${i}]`, value: item });
+	}
+
 	private diffNode(a: JsonValue, b: JsonValue, path: string, ops: DiffOp[]): void {
 		if (Array.isArray(a) && Array.isArray(b)) {
 			const key = this.keyMap.get(path) ?? this.keyMap.get(toPathPattern(path));
+			if (key === '$self') { this.diffArrayBySelf(a, b, path, ops); return; }
 			if (key) { this.diffArrayByKey(a, b, path, key, ops); return; }
 			const maxLen = Math.max(a.length, b.length);
 			for (let i = 0; i < maxLen; i++) {
