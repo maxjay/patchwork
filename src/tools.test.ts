@@ -109,7 +109,7 @@ describe('createEngineTools — read tools', () => {
 		e.delete('$.items[0]');
 		const out = toolByName(createEngineTools(e), 'diff').execute({ path: '$.items', key: 'id' });
 		expect(out).toEqual([
-			{ op: 'remove', path: "$['items'][0]", value: { id: 1, v: 'a' } },
+			{ op: 'remove', path: "$['items'][0]", value: { id: 1, v: 'a' }, identity: 1 },
 		]);
 	});
 });
