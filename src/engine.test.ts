@@ -1105,32 +1105,32 @@ describe('Engine — identity-keyed array diff', () => {
 		expect((replaceOp as any).identity).toBeUndefined();
 	});
 
-	it('nested: deleting a secondary emits identity; parent primary path is navigable in draft', () => {
+	it('nested: deleting a child emits identity; parent path is navigable in draft', () => {
 		const nestedSchema = {
 			type: 'object',
 			properties: {
-				primaryTypes: {
+				groups: {
 					type: 'array', 'x-key': 'id',
 					items: {
 						type: 'object',
 						properties: {
-							secondaryTypes: { type: 'array', 'x-key': 'id', items: { type: 'object' } },
+							members: { type: 'array', 'x-key': 'id', items: { type: 'object' } },
 						},
 					},
 				},
 			},
 		};
 		const e = new Engine<any>({
-			primaryTypes: [
-				{ id: 'p1', label: 'Group A', secondaryTypes: [{ id: 's1', label: 'Alpha' }, { id: 's2', label: 'Beta' }] },
-				{ id: 'p2', label: 'Group B', secondaryTypes: [] },
+			groups: [
+				{ id: 'p1', label: 'Group A', members: [{ id: 's1', label: 'Alpha' }, { id: 's2', label: 'Beta' }] },
+				{ id: 'p2', label: 'Group B', members: [] },
 			],
 		}, { schema: nestedSchema });
 
-		e.delete('$.primaryTypes[0].secondaryTypes[0]'); // delete s1 from p1
+		e.delete('$.groups[0].members[0]');
 
 		expect(e.diff()).toEqual([
-			{ op: 'remove', path: "$['primaryTypes'][0]['secondaryTypes'][0]", value: { id: 's1', label: 'Alpha' }, identity: 's1' },
+			{ op: 'remove', path: "$['groups'][0]['members'][0]", value: { id: 's1', label: 'Alpha' }, identity: 's1' },
 		]);
 	});
 });
