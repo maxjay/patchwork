@@ -1018,7 +1018,7 @@ describe('Engine — identity-keyed array diff', () => {
 		const e = new Engine({ items: [{ id: 1, v: 'a' }, { id: 2, v: 'b' }, { id: 3, v: 'c' }] }, { schema });
 		e.delete('$.items[0]');
 		expect(e.diff()).toEqual([
-			{ op: 'remove', path: "$['items'][0]", value: { id: 1, v: 'a' } },
+			{ op: 'remove', path: "$['items'][0]", value: { id: 1, v: 'a' }, identity: 1 },
 		]);
 	});
 
@@ -1026,7 +1026,7 @@ describe('Engine — identity-keyed array diff', () => {
 		const e = new Engine<any>({ items: [{ id: 1 }] }, { schema });
 		e.add('$.items[1]', { id: 2, v: 'new' });
 		expect(e.diff()).toEqual([
-			{ op: 'add', path: "$['items'][1]", value: { id: 2, v: 'new' } },
+			{ op: 'add', path: "$['items'][1]", value: { id: 2, v: 'new' }, identity: 2 },
 		]);
 	});
 
@@ -1048,7 +1048,7 @@ describe('Engine — identity-keyed array diff', () => {
 		const e = new Engine({ items: [{ id: 1, v: 'a' }, { id: 2, v: 'b' }] });
 		e.delete('$.items[0]');
 		expect(e.diff('$.items', { key: 'id' })).toEqual([
-			{ op: 'remove', path: "$['items'][0]", value: { id: 1, v: 'a' } },
+			{ op: 'remove', path: "$['items'][0]", value: { id: 1, v: 'a' }, identity: 1 },
 		]);
 	});
 
@@ -1073,7 +1073,7 @@ describe('Engine — identity-keyed array diff', () => {
 		);
 		e.delete('$.groups[0].members[0]');
 		expect(e.diff()).toEqual([
-			{ op: 'remove', path: "$['groups'][0]['members'][0]", value: { uid: 10 } },
+			{ op: 'remove', path: "$['groups'][0]['members'][0]", value: { uid: 10 }, identity: 10 },
 		]);
 	});
 
@@ -1083,6 +1083,54 @@ describe('Engine — identity-keyed array diff', () => {
 		e.replace('$.items[0].v', 'z');
 		expect(lens.diff()).toEqual([
 			{ op: 'replace', path: "$[0]['v']", absolutePath: "$['items'][0]['v']", oldValue: 'a', value: 'z' },
+		]);
+	});
+
+	it('identity disambiguates remove from internal-change when both land on the same index', () => {
+		// base: [p1(0), p2(1), p3(2)] — delete p2, change p3.v
+		// After delete: p3 shifts to draft[1]. The remove for p2 uses base index 1;
+		// the replace for p3.v uses draft index 1. Without identity they look identical.
+		const e = new Engine<any>(
+			{ items: [{ id: 1, v: 'a' }, { id: 2, v: 'b' }, { id: 3, v: 'c' }] },
+			{ schema },
+		);
+		e.delete('$.items[1]');
+		e.replace('$.items[1].v', 'z'); // items[1] in draft is now id:3
+		const ops = e.diff();
+		const removeOp = ops.find(o => o.op === 'remove');
+		const replaceOp = ops.find(o => o.op === 'replace');
+		expect(removeOp).toMatchObject({ op: 'remove', value: { id: 2, v: 'b' }, identity: 2 });
+		expect(replaceOp).toMatchObject({ op: 'replace', value: 'z' });
+		// identity is only on the element-level remove, not on the field-level replace
+		expect((replaceOp as any).identity).toBeUndefined();
+	});
+
+	it('nested: deleting a child emits identity; parent path is navigable in draft', () => {
+		const nestedSchema = {
+			type: 'object',
+			properties: {
+				groups: {
+					type: 'array', 'x-key': 'id',
+					items: {
+						type: 'object',
+						properties: {
+							members: { type: 'array', 'x-key': 'id', items: { type: 'object' } },
+						},
+					},
+				},
+			},
+		};
+		const e = new Engine<any>({
+			groups: [
+				{ id: 'p1', label: 'Group A', members: [{ id: 's1', label: 'Alpha' }, { id: 's2', label: 'Beta' }] },
+				{ id: 'p2', label: 'Group B', members: [] },
+			],
+		}, { schema: nestedSchema });
+
+		e.delete('$.groups[0].members[0]');
+
+		expect(e.diff()).toEqual([
+			{ op: 'remove', path: "$['groups'][0]['members'][0]", value: { id: 's1', label: 'Alpha' }, identity: 's1' },
 		]);
 	});
 });
@@ -1099,7 +1147,7 @@ describe('Engine — $self set diff', () => {
 		const e = new Engine<any>({ tags: ['urgent', 'review'] }, { schema });
 		e.add('$.tags[0]', 'blocked');
 		expect(e.diff()).toEqual([
-			{ op: 'add', path: "$['tags'][0]", value: 'blocked' },
+			{ op: 'add', path: "$['tags'][0]", value: 'blocked', identity: 'blocked' },
 		]);
 	});
 
@@ -1107,7 +1155,7 @@ describe('Engine — $self set diff', () => {
 		const e = new Engine<any>({ tags: ['urgent', 'review', 'blocked'] }, { schema });
 		e.delete('$.tags[0]');
 		expect(e.diff()).toEqual([
-			{ op: 'remove', path: "$['tags'][0]", value: 'urgent' },
+			{ op: 'remove', path: "$['tags'][0]", value: 'urgent', identity: 'urgent' },
 		]);
 	});
 
@@ -1133,8 +1181,8 @@ describe('Engine — $self set diff', () => {
 		const e = new Engine<any>({ ids: [1, 2, 3] }, { schema: numericSchema });
 		e.replace('$.ids', [2, 3, 4]);
 		expect(e.diff()).toEqual([
-			{ op: 'remove', path: "$['ids'][0]", value: 1 },
-			{ op: 'add', path: "$['ids'][2]", value: 4 },
+			{ op: 'remove', path: "$['ids'][0]", value: 1, identity: 1 },
+			{ op: 'add', path: "$['ids'][2]", value: 4, identity: 4 },
 		]);
 	});
 
@@ -1142,7 +1190,7 @@ describe('Engine — $self set diff', () => {
 		const e = new Engine<any>({ tags: ['a', 'b'] });
 		e.delete('$.tags[0]');
 		expect(e.diff('$.tags', { key: '$self' })).toEqual([
-			{ op: 'remove', path: "$['tags'][0]", value: 'a' },
+			{ op: 'remove', path: "$['tags'][0]", value: 'a', identity: 'a' },
 		]);
 	});
 

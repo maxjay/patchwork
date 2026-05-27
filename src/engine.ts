@@ -25,9 +25,9 @@ export interface Operation {
 // expressed as a JSONPath + the relevant values. Unlike Operation, it has no
 // knowledge of history or how to reverse anything — it's purely descriptive.
 export type DiffOp =
-	| { op: OpType.Add;     path: string; absolutePath?: string; value: JsonValue }
-	| { op: OpType.Replace; path: string; absolutePath?: string; oldValue?: JsonValue; value: JsonValue }
-	| { op: OpType.Remove;  path: string; absolutePath?: string; value?: JsonValue }
+	| { op: OpType.Add;     path: string; absolutePath?: string; value: JsonValue; identity?: JsonValue }
+	| { op: OpType.Replace; path: string; absolutePath?: string; oldValue?: JsonValue; value: JsonValue; identity?: JsonValue }
+	| { op: OpType.Remove;  path: string; absolutePath?: string; value?: JsonValue; identity?: JsonValue }
 	| { op: OpType.Move | OpType.Copy; from: string; to: string }
 	| { op: OpType.Revert; path: string; absolutePath?: string };
 
@@ -550,10 +550,10 @@ export class Engine<T extends JsonValue = JsonValue> {
 		const bMap = new Map(b.map((item, i) => [(item as any)[key], { item, i }]));
 
 		for (const [id, { item, i }] of aMap)
-			if (!bMap.has(id)) ops.push({ op: OpType.Remove, path: `${path}[${i}]`, value: item });
+			if (!bMap.has(id)) ops.push({ op: OpType.Remove, path: `${path}[${i}]`, value: item, identity: id });
 
 		for (const [id, { item, i }] of bMap)
-			if (!aMap.has(id)) ops.push({ op: OpType.Add, path: `${path}[${i}]`, value: item });
+			if (!aMap.has(id)) ops.push({ op: OpType.Add, path: `${path}[${i}]`, value: item, identity: id });
 
 		for (const [id, { item: bItem, i: bIndex }] of bMap)
 			if (aMap.has(id)) this.diffNode(aMap.get(id)!.item, bItem, `${path}[${bIndex}]`, ops);
@@ -591,10 +591,10 @@ export class Engine<T extends JsonValue = JsonValue> {
 		b.forEach((item, i) => bMap.set(item, i));
 
 		for (const [item, i] of aMap)
-			if (!bMap.has(item)) ops.push({ op: OpType.Remove, path: `${path}[${i}]`, value: item });
+			if (!bMap.has(item)) ops.push({ op: OpType.Remove, path: `${path}[${i}]`, value: item, identity: item });
 
 		for (const [item, i] of bMap)
-			if (!aMap.has(item)) ops.push({ op: OpType.Add, path: `${path}[${i}]`, value: item });
+			if (!aMap.has(item)) ops.push({ op: OpType.Add, path: `${path}[${i}]`, value: item, identity: item });
 	}
 
 	private diffNode(a: JsonValue, b: JsonValue, path: string, ops: DiffOp[]): void {
