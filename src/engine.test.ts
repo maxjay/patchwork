@@ -627,6 +627,65 @@ describe('Engine.getValue', () => {
 	});
 });
 
+describe('Engine.getBase', () => {
+	it('reads from base, not draft', () => {
+		const e = new Engine({ a: 1 });
+		e.replace('$.a', 99);
+		expect(e.get('$.a')).toEqual([{ path: "$['a']", value: 99 }]);
+		expect(e.getBase('$.a')).toEqual([{ path: "$['a']", value: 1 }]);
+	});
+
+	it('supports wildcards against base', () => {
+		const e = new Engine({ items: ['a', 'b', 'c'] });
+		e.replace('$.items[0]', 'z');
+		expect(e.getBase('$.items[*]')).toEqual([
+			{ path: "$['items'][0]", value: 'a' },
+			{ path: "$['items'][1]", value: 'b' },
+			{ path: "$['items'][2]", value: 'c' },
+		]);
+	});
+
+	it('returns empty array when nothing matches in base', () => {
+		const e = new Engine({ a: 1 });
+		expect(e.getBase('$.missing')).toEqual([]);
+	});
+
+	it('reflects base after accept()', () => {
+		const e = new Engine({ a: 1 });
+		e.replace('$.a', 2);
+		e.accept();
+		expect(e.getBase('$.a')).toEqual([{ path: "$['a']", value: 2 }]);
+		expect(e.get('$.a')).toEqual([{ path: "$['a']", value: 2 }]);
+	});
+});
+
+describe('Engine.getValueBase', () => {
+	it('reads from base, not draft', () => {
+		const e = new Engine({ a: 1 });
+		e.replace('$.a', 99);
+		expect(e.getValueBase('$.a')).toBe(1);
+	});
+
+	it('throws undefined when the path resolves to no value in base', () => {
+		const e = new Engine({ a: 1 });
+		let thrown: unknown = 'sentinel';
+		try { e.getValueBase('$.missing'); } catch (err) { thrown = err; }
+		expect(thrown).toBeUndefined();
+	});
+
+	it('throws an Error when the path resolves to multiple values in base', () => {
+		const e = new Engine({ items: [1, 2, 3] });
+		expect(() => e.getValueBase('$.items[*]')).toThrow();
+	});
+
+	it('reflects base after accept()', () => {
+		const e = new Engine({ a: 1 });
+		e.replace('$.a', 2);
+		e.accept();
+		expect(e.getValueBase('$.a')).toBe(2);
+	});
+});
+
 // A child engine is a scoped lens onto a sub-path of a parent engine. The
 // parent owns the underlying base/draft and the undo stack; the child reads
 // and writes through the parent. Mutations through the child are visible in
@@ -785,6 +844,26 @@ describe('Engine nesting (proposed)', () => {
 		const engine = new Engine({ cars: [{}, {}] });
 		expect(() => engine.getNodeEngine('$.cars[*]')).toThrow();
 		expect(() => engine.getNodeEngine('$.missing')).toThrow();
+	});
+
+	it('getBase on a child reads from parent base, paths rebased to child frame', () => {
+		const engine = new Engine({
+			cars: [{ color: 'red' }, { color: 'blue' }],
+		});
+		const cars = engine.getNodeEngine('$.cars');
+		engine.replace('$.cars[0].color', 'yellow');
+
+		expect(cars.get('$[0].color')).toEqual([{ path: "$[0]['color']", value: 'yellow' }]);
+		expect(cars.getBase('$[0].color')).toEqual([{ path: "$[0]['color']", value: 'red' }]);
+	});
+
+	it('getValueBase on a child reads committed value from parent base', () => {
+		const engine = new Engine({ cars: [{ color: 'red' }] });
+		const cars = engine.getNodeEngine('$.cars');
+		engine.replace('$.cars[0].color', 'yellow');
+
+		expect(cars.getValue('$[0].color')).toBe('yellow');
+		expect(cars.getValueBase('$[0].color')).toBe('red');
 	});
 });
 describe('Engine.ephemeral', () => {
