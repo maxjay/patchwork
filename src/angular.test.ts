@@ -117,6 +117,25 @@ describe('PatchworkStore reactive reads', () => {
 		expect(count()).toBe(99);
 	});
 
+	it('getValueBase<U>() infers the declared type without a cast', () => {
+		const store = createPatchworkStore<any>({ count: 42 });
+		const base = store.getValueBase<number>('$.count');
+		expect(base()).toBe(42);
+		store.replace('$.count', 99);
+		expect(base()).toBe(42);
+		store.accept();
+		expect(base()).toBe(99);
+	});
+
+	it('getBase<U>() infers the declared type without a cast', () => {
+		const store = createPatchworkStore<any>({ tag: 'hello' });
+		const base = store.getBase<string>('$.tag');
+		store.replace('$.tag', 'world');
+		expect(base().map(r => r.value)).toEqual(['hello']);
+		store.accept();
+		expect(base().map(r => r.value)).toEqual(['world']);
+	});
+
 	it('diff signal becomes empty after accept', () => {
 		const store = createPatchworkStore<any>({ x: 1 });
 		const diff = store.diff();
