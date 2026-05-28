@@ -246,35 +246,27 @@ describe('PatchworkStore ephemeral', () => {
 });
 
 describe('PatchworkStore.get with key', () => {
-	it('returns a merged draft+base signal', () => {
+	it('attaches identity to draft results', () => {
 		const store = createPatchworkStore<any>({ items: [{ id: 1 }, { id: 2 }] });
 		const items = store.get('$.items[*]', { key: 'id' });
-		expect(items().every(r => r.op === 'unchanged')).toBe(true);
+		expect(items().map(r => r.identity)).toEqual([1, 2]);
 	});
 
-	it('fires when draft changes (delete)', () => {
+	it('signal updates after mutation', () => {
 		const store = createPatchworkStore<any>({ items: [{ id: 1 }, { id: 2 }] });
 		const items = store.get('$.items[*]', { key: 'id' });
 		store.delete('$.items[0]');
-		expect(items().find(r => r.identity === 1)?.op).toBe('remove');
-		expect(items().find(r => r.identity === 1)?.path).toBeNull();
+		expect(items()).toHaveLength(1);
+		expect(items()[0].identity).toBe(2);
 	});
 
-	it('fires when base changes (accept)', () => {
-		const store = createPatchworkStore<any>({ items: [{ id: 1 }] });
-		const items = store.get('$.items[*]', { key: 'id' });
-		store.delete('$.items[0]');
-		expect(items().find(r => r.identity === 1)?.op).toBe('remove');
-		store.accept();
-		expect(items().find(r => r.identity === 1)).toBeUndefined();
-	});
-
-	it('getBase with key annotates base items with draft state', () => {
+	it('getBase with key attaches identity to base results', () => {
 		const store = createPatchworkStore<any>({ items: [{ id: 1 }, { id: 2 }] });
 		const base = store.getBase('$.items[*]', { key: 'id' });
 		store.delete('$.items[0]');
-		expect(base().find(r => r.identity === 1)?.op).toBe('remove');
-		expect(base().find(r => r.identity === 2)?.op).toBe('unchanged');
+		expect(base().map(r => r.identity)).toEqual([1, 2]); // base unchanged
+		store.accept();
+		expect(base().map(r => r.identity)).toEqual([2]); // base updated
 	});
 });
 
