@@ -11,6 +11,7 @@
   <a href="#array-diffing">Array diffing</a> &middot;
   <a href="#scoped-lenses">Scoped lenses</a> &middot;
   <a href="#llm-integration">LLM integration</a> &middot;
+  <a href="#angular-integration">Angular</a> &middot;
   <a href="#api">API</a>
 </p>
 
@@ -291,7 +292,7 @@ For MCP servers and agentic loops, see [docs/llms.md](docs/llms.md).
 
 ## Angular integration
 
-`@maxjay/patchwork/angular` wraps an `Engine` in a reactive store built on Angular Signals (Angular 16+). All reads are exposed as `Signal`s; mutations fire them automatically.
+`@maxjay/patchwork/angular` wraps an `Engine` in a reactive store built on Angular Signals (Angular 16+). All reads are exposed as `Signal`s; mutations fire them automatically — no `ChangeDetectorRef`, no `NgZone`.
 
 ```ts
 import { createPatchworkStore } from '@maxjay/patchwork/angular';
@@ -300,12 +301,13 @@ import { createPatchworkStore } from '@maxjay/patchwork/angular';
   template: `
     <input [value]="port()" (input)="setPort($event)">
     <button (click)="store.accept()" [disabled]="!diff().length">Save</button>
+    <button (click)="store.decline()" [disabled]="!diff().length">Discard</button>
   `,
 })
 class ServerSettings {
   store = createPatchworkStore({ server: { port: 8080 } });
-  port = this.store.getValue('$.server.port');
-  diff = this.store.diff();
+  port  = this.store.getValue<number>('$.server.port');
+  diff  = this.store.diff();
 
   setPort(e: Event) {
     this.store.replace('$.server.port', +(e.target as HTMLInputElement).value);
@@ -313,7 +315,7 @@ class ServerSettings {
 }
 ```
 
-For the full API and patterns (change-highlighting UI, form binding, sub-stores), see [docs/angular.md](docs/angular.md).
+See **[docs/angular.md](docs/angular.md)** for the full API, typed generics, change-highlighting UI, ephemeral form binding, scoped sub-stores, and service patterns.
 
 ## API
 

@@ -1,10 +1,10 @@
 # Angular Signals adapter
 
-`@maxjay/patchwork/angular` wraps an `Engine` in a reactive store built on Angular Signals (Angular 16+). All reads are exposed as `Signal`s; all mutations fire those signals, so templates, computeds, and effects update automatically.
+`@maxjay/patchwork/angular` wraps an `Engine` in a reactive store built on Angular Signals (Angular 16+). All reads are exposed as `Signal`s; all mutations fire those signals, so templates, computeds, and effects update automatically — no `ChangeDetectorRef`, no `NgZone`.
 
 ## Install
 
-`@angular/core` is a peer dependency. The adapter itself ships with patchwork.
+`@angular/core` is a peer dependency. The adapter ships with patchwork.
 
 ```bash
 npm install @maxjay/patchwork @angular/core
@@ -27,12 +27,11 @@ import { createPatchworkStore } from '@maxjay/patchwork/angular';
 class ServerSettings {
   store = createPatchworkStore({ server: { port: 8080 } });
 
-  port = this.store.getValue('$.server.port');
+  port = this.store.getValue<number>('$.server.port');
   diff = this.store.diff();
 
   setPort(e: Event) {
-    const v = +(e.target as HTMLInputElement).value;
-    this.store.replace('$.server.port', v);
+    this.store.replace('$.server.port', +(e.target as HTMLInputElement).value);
   }
 }
 ```
@@ -70,11 +69,29 @@ const store = fromEngine(engine);
 | `store.getValueBase<U>(path)` | `Signal<U>` | base, strict single-match |
 | `store.diff(path?, options?)` | `Signal<DiffOp[]>` | structural diff |
 
-**Caching:** Methods that take args (everything except `draft`/`base`) return a *new* `Signal` on each call. Assign once to a class field — don't call them in a template hot path. This is the same pattern as Angular's own `computed()`.
+#### Typed generics
+
+The `<U>` type parameter is optional and defaults to `JsonValue`. Declare it to get a typed signal without a cast:
+
+```ts
+// Without generic — requires a cast at the call site
+items = this.store.getValue('$.items') as Signal<Item[]>;
+
+// With generic — typed directly
+items = this.store.getValue<Item[]>('$.items');
+groups  = this.store.getValue<Group[]>('$.groups');
+members = this.store.getValue<Member[]>('$.members');
+```
+
+This works the same way for `get<U>`, `getBase<U>`, and `getValueBase<U>`.
+
+#### Caching
+
+Methods that take args (everything except `draft`/`base`) return a *new* `Signal` on each call. Assign once to a class field — don't call them in a template hot path. This is the same pattern as Angular's own `computed()`.
 
 ```ts
 // ✅ Right — created once
-port = this.store.getValue('$.server.port');
+port = this.store.getValue<number>('$.server.port');
 
 // ❌ Wrong — new Signal per change-detection cycle
 template: `{{ store.getValue('$.server.port')() }}`
@@ -86,23 +103,23 @@ template: `{{ store.getValue('$.server.port')() }}`
 
 `undo`, `redo` — fire both draft and base signals.
 
-`accept` — fires base. `decline` — fires draft.
+`accept` — promotes draft to base, fires the base signal. `decline` — resets draft from base, fires the draft signal.
 
 ### Ephemeral sessions
 
-`store.beginEphemeral()`, `store.commitEphemeral()`, `store.discardEphemeral()` — same semantics as `Engine`. Only available on root stores (`scope()` returns a store that throws on these — use the root for ephemeral).
+`store.beginEphemeral()`, `store.commitEphemeral()`, `store.discardEphemeral()` — same semantics as `Engine`. Only available on root stores — `scope()` returns a store that throws on these. Use the root store for ephemeral.
 
 ### `store.scope<U>(path): PatchworkStore<U>`
 
-Sub-store rooted at a subtree. Shares the parent's signal ticks — mutations through either side update both. Use to scope an LLM, a component, or a feature module to a slice of the document without losing reactivity.
+Sub-store rooted at a subtree. Shares the parent's signal ticks — mutations through either side update both. Use to scope a component or feature module to a slice of the document without losing reactivity.
 
 ```ts
-const cars = store.scope<Car[]>('$.cars');
-cars.replace('$[0].color', 'yellow');
-// store.draft().cars[0].color === 'yellow' too
+const network = store.scope<NetworkConfig>('$.network');
+network.replace('$.timeout', 5000);
+// store.draft().network.timeout === 5000 too
 ```
 
-`cars.accept()` commits the cars subtree only — the rest of `base` stays put.
+`network.accept()` commits the network subtree only — the rest of `base` stays put. `network.diff()` is automatically scoped to that subtree.
 
 ### `store.engine`
 
@@ -112,7 +129,7 @@ Escape hatch. Returns the underlying `Engine` or `NodeEngine`. Use for anything 
 
 ### Change-highlighting UI
 
-Render rows with classes derived from the diff:
+`diff` doubles as both a "has unsaved changes" indicator and a per-row state source. With identity-keyed diffing, the `identity` field on `add`/`remove` ops tells you exactly which item was affected — no path parsing required:
 
 ```ts
 @Component({
@@ -120,32 +137,35 @@ Render rows with classes derived from the diff:
     @for (item of items(); track item.id) {
       <div [class]="stateOf(item.id)">{{ item.name }}</div>
     }
+    <button (click)="store.accept()" [disabled]="!diff().length">Save</button>
+    <button (click)="store.decline()" [disabled]="!diff().length">Discard</button>
   `,
 })
 class ItemList {
-  store = createPatchworkStore<any>({ items: [...] }, {
-    schema: {
-      type: 'object',
-      properties: {
-        items: { type: 'array', 'x-key': 'id', items: { type: 'object' } },
+  store = createPatchworkStore<any>(
+    { items: [...] },
+    {
+      schema: {
+        type: 'object',
+        properties: {
+          items: { type: 'array', 'x-key': 'id', items: { type: 'object' } },
+        },
       },
     },
-  });
+  );
 
-  items = this.store.getValue('$.items') as Signal<Item[]>;
-  diff = this.store.diff('$.items');
+  items = this.store.getValue<Item[]>('$.items');
+  diff  = this.store.diff('$.items');
 
   stateOf(id: string): string {
     const ops = this.diff();
-    if (ops.some(o => o.op === 'add' && (o as any).identity === id)) return 'added';
-    if (ops.some(o => o.op === 'remove' && (o as any).identity === id)) return 'removed';
-    if (ops.some(o => o.path?.includes(`'id':'${id}'`))) return 'modified';
+    if (ops.some(o => o.op === 'add'    && o.identity === id)) return 'added';
+    if (ops.some(o => o.op === 'remove' && o.identity === id)) return 'removed';
+    if (ops.some(o => o.op === 'replace'))                     return 'modified';
     return 'unchanged';
   }
 }
 ```
-
-The `identity` field on `add`/`remove` ops makes this clean — no need to extract the key field from `value`.
 
 ### Form binding with ephemeral commit
 
@@ -162,13 +182,15 @@ Bind input changes live but collapse to one undo entry on blur:
 })
 class PortField {
   store = createPatchworkStore({ port: 8080 });
-  port = this.store.getValue('$.port');
+  port  = this.store.getValue<number>('$.port');
 
   onInput(e: Event) {
     this.store.replace('$.port', +(e.target as HTMLInputElement).value);
   }
 }
 ```
+
+One `undo()` snaps the field back to the value it had on focus. `discardEphemeral()` cancels instead — unwinds all session mutations with no history trace.
 
 ### Save / discard buttons
 
@@ -192,18 +214,38 @@ Put the store on a service:
 @Injectable({ providedIn: 'root' })
 class ConfigStore {
   private inner = createPatchworkStore<Config>(getInitial());
+
   readonly draft = this.inner.draft;
-  readonly diff = this.inner.diff();
-  add(...args) { this.inner.add(...args); }
-  replace(...args) { this.inner.replace(...args); }
-  // ... etc, or just expose `inner` directly
+  readonly diff  = this.inner.diff();
+
+  add(...args: Parameters<typeof this.inner.add>)         { this.inner.add(...args); }
+  replace(...args: Parameters<typeof this.inner.replace>) { this.inner.replace(...args); }
+  accept()  { this.inner.accept(); }
+  decline() { this.inner.decline(); }
 }
 ```
 
 Any component that injects `ConfigStore` and reads its signals participates in the same reactive document.
 
+### Scoped feature modules
+
+Use `scope()` to give a feature module its own store view without wiring the full document:
+
+```ts
+@Injectable()
+class NetworkSettingsStore {
+  private root = inject(ConfigStore).inner;
+  readonly store = this.root.scope<NetworkConfig>('$.network');
+
+  readonly timeout = this.store.getValue<number>('$.timeout');
+  readonly diff    = this.store.diff();
+}
+```
+
+Mutations through `NetworkSettingsStore` are visible on the root store's signals, and vice versa. `store.accept()` commits only the network subtree.
+
 ## Notes on reactivity
 
-The store updates engine state in-place (no `structuredClone` per mutation) and uses `equal: () => false` on its internal signals to force propagation regardless of reference equality. This keeps the hot path cheap — mutating 100 fields doesn't allocate 100 cloned documents — while keeping signal semantics correct.
+The store updates engine state in-place (no `structuredClone` per mutation) and uses `equal: () => false` on its internal tick signals to force propagation regardless of reference equality. This keeps the hot path cheap — mutating 100 fields doesn't allocate 100 cloned documents — while keeping signal semantics correct.
 
 If you read `engine.draft` directly (without going through the store), you get the same reference the store holds. Don't mutate it through the engine after that — the store's signal won't fire and the UI will desync. Always go through the store for writes.
