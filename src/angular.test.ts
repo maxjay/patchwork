@@ -109,6 +109,14 @@ describe('PatchworkStore reactive reads', () => {
 		]);
 	});
 
+	it('getValue<U>() infers the declared type without a cast', () => {
+		const store = createPatchworkStore<any>({ count: 42 });
+		const count = store.getValue<number>('$.count');
+		expect(count()).toBe(42);
+		store.replace('$.count', 99);
+		expect(count()).toBe(99);
+	});
+
 	it('diff signal becomes empty after accept', () => {
 		const store = createPatchworkStore<any>({ x: 1 });
 		const diff = store.diff();

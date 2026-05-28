@@ -64,10 +64,10 @@ const store = fromEngine(engine);
 |---|---|---|
 | `store.draft` | `Signal<T>` | whole draft |
 | `store.base` | `Signal<T>` | whole base |
-| `store.get(path)` | `Signal<Array<{path, value}>>` | draft, JSONPath query |
-| `store.getBase(path)` | `Signal<Array<{path, value}>>` | base, JSONPath query |
-| `store.getValue(path)` | `Signal<JsonValue>` | draft, strict single-match |
-| `store.getValueBase(path)` | `Signal<JsonValue>` | base, strict single-match |
+| `store.get<U>(path)` | `Signal<Array<{path, value: U}>>` | draft, JSONPath query |
+| `store.getBase<U>(path)` | `Signal<Array<{path, value: U}>>` | base, JSONPath query |
+| `store.getValue<U>(path)` | `Signal<U>` | draft, strict single-match |
+| `store.getValueBase<U>(path)` | `Signal<U>` | base, strict single-match |
 | `store.diff(path?, options?)` | `Signal<DiffOp[]>` | structural diff |
 
 **Caching:** Methods that take args (everything except `draft`/`base`) return a *new* `Signal` on each call. Assign once to a class field — don't call them in a template hot path. This is the same pattern as Angular's own `computed()`.

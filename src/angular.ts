@@ -26,10 +26,10 @@ export interface PatchworkStore<T extends JsonValue = JsonValue> {
 	readonly base: Signal<T>;
 	readonly engine: Engine<T> | NodeEngine<T>;
 
-	get(path: string): Signal<Array<{ path: string; value: JsonValue }>>;
-	getBase(path: string): Signal<Array<{ path: string; value: JsonValue }>>;
-	getValue(path: string): Signal<JsonValue>;
-	getValueBase(path: string): Signal<JsonValue>;
+	get<U = JsonValue>(path: string): Signal<Array<{ path: string; value: U }>>;
+	getBase<U = JsonValue>(path: string): Signal<Array<{ path: string; value: U }>>;
+	getValue<U = JsonValue>(path: string): Signal<U>;
+	getValueBase<U = JsonValue>(path: string): Signal<U>;
 	diff(path?: string, options?: { key?: string }): Signal<DiffOp[]>;
 
 	add(path: string, value: any): void;
@@ -80,31 +80,31 @@ class PatchworkStoreImpl<T extends JsonValue> implements PatchworkStore<T> {
 	private fireDraft() { this._draftTick.set(null); }
 	private fireBase() { this._baseTick.set(null); }
 
-	get(path: string): Signal<Array<{ path: string; value: JsonValue }>> {
+	get<U = JsonValue>(path: string): Signal<Array<{ path: string; value: U }>> {
 		return computed(() => {
 			this._draftTick();
-			return this.engine.get(path);
+			return this.engine.get(path) as Array<{ path: string; value: U }>;
 		}, { equal: neverEqual });
 	}
 
-	getBase(path: string): Signal<Array<{ path: string; value: JsonValue }>> {
+	getBase<U = JsonValue>(path: string): Signal<Array<{ path: string; value: U }>> {
 		return computed(() => {
 			this._baseTick();
-			return this.engine.getBase(path);
+			return this.engine.getBase(path) as Array<{ path: string; value: U }>;
 		}, { equal: neverEqual });
 	}
 
-	getValue(path: string): Signal<JsonValue> {
+	getValue<U = JsonValue>(path: string): Signal<U> {
 		return computed(() => {
 			this._draftTick();
-			return this.engine.getValue(path);
+			return this.engine.getValue(path) as U;
 		}, { equal: neverEqual });
 	}
 
-	getValueBase(path: string): Signal<JsonValue> {
+	getValueBase<U = JsonValue>(path: string): Signal<U> {
 		return computed(() => {
 			this._baseTick();
-			return this.engine.getValueBase(path);
+			return this.engine.getValueBase(path) as U;
 		}, { equal: neverEqual });
 	}
 
