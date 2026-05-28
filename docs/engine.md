@@ -159,6 +159,24 @@ Strict single-match read. Throws an `Error` if the path resolves to more than on
 
 Designed for binding to a single field. If you need multi-match, use `get`.
 
+### `getBase(path)` and `getValueBase(path)`
+
+Exact mirrors of `get` and `getValue` that read from `base` instead of `draft`. Same return shapes, same throw semantics.
+
+Useful when you need to query the committed state with full JSONPath expressiveness — wildcards, filters, recursive descent — without dropping down to `engine.base` and navigating manually.
+
+```ts
+engine.replace('$.items[0].label', 'new label');
+
+engine.get('$.items[*].label');      // ['new label', 'b', 'c']  — draft
+engine.getBase('$.items[*].label');  // ['old label', 'b', 'c']  — committed
+
+engine.getValue('$.items[0].label');      // 'new label'
+engine.getValueBase('$.items[0].label');  // 'old label'
+```
+
+After `accept()`, `base` matches `draft` and both pairs return the same values. Both methods are also available on `NodeEngine`, reading from the parent's base subtree with paths rebased to the child frame.
+
 ---
 
 ## `diff()` in depth

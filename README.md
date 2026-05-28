@@ -304,7 +304,9 @@ For MCP servers and agentic loops, see [docs/llms.md](docs/llms.md).
 | `.copy(from, to)` | Copy. Source must resolve to exactly one node. |
 | `.revert(path)` | Reset draft at path to base. |
 | `.get(path)` | `Array<{ path, value }>` — every match in draft with normalized paths. |
-| `.getValue(path)` | Strict single-match read. Throws `Error` on multi-match; throws `undefined` on no-match. |
+| `.getBase(path)` | Same as `get` but reads from base. |
+| `.getValue(path)` | Strict single-match read from draft. Throws `Error` on multi-match; throws `undefined` on no-match. |
+| `.getValueBase(path)` | Same as `getValue` but reads from base. |
 | `.diff(path?, options?)` | `DiffOp[]` — structural diff between base and draft. |
 | `.undo()` / `.redo()` | Reverse / replay the last operation. |
 | `.accept()` | Promote draft into base. Reversible. |
@@ -322,7 +324,8 @@ For MCP servers and agentic loops, see [docs/llms.md](docs/llms.md).
 |---|---|
 | `.base` / `.draft` | The subtree from parent state. |
 | `.add` / `.replace` / `.delete` / `.move` / `.copy` / `.revert` | Mutations forwarded to parent with paths rewritten. |
-| `.get(path)` / `.getValue(path)` | Reads in child frame, forwarded to parent. |
+| `.get(path)` / `.getBase(path)` | Reads draft / base in child frame, forwarded to parent. |
+| `.getValue(path)` / `.getValueBase(path)` | Strict single-match reads from draft / base. |
 | `.diff(path?, options?)` | Ops touching this subtree. Paths relative to child `$`; each op also carries `absolutePath`. |
 | `.accept()` | Commits this subtree into parent's base. |
 | `.decline()` | Resets this subtree in parent's draft from parent's base. |

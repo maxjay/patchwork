@@ -221,6 +221,15 @@ export class Engine<T extends JsonValue = JsonValue> {
 		}));
 	}
 
+	// Same as get() but reads from base instead of draft.
+	getBase(jsonPath: string): Array<{ path: string; value: JsonValue }> {
+		const matched = paths(this.base, jsonPath);
+		return matched.map(p => ({
+			path: p,
+			value: this.getAt(this.segmentsFrom(p), this.base),
+		}));
+	}
+
 	// Strict single-match read. Throws an Error when the path resolves to more
 	// than one value (ambiguous), and throws `undefined` itself when it resolves
 	// to none — the missing value is signalled by throwing the absence.
@@ -233,6 +242,18 @@ export class Engine<T extends JsonValue = JsonValue> {
 			throw undefined;
 		}
 		return this.getAt(this.segmentsFrom(matched[0]));
+	}
+
+	// Same as getValue() but reads from base instead of draft.
+	getValueBase(jsonPath: string): JsonValue {
+		const matched = paths(this.base, jsonPath);
+		if (matched.length > 1) {
+			throw new Error(`getValueBase: path resolved to ${matched.length} values, expected exactly one`);
+		}
+		if (matched.length === 0) {
+			throw undefined;
+		}
+		return this.getAt(this.segmentsFrom(matched[0]), this.base);
 	}
 
 	// Returns a scoped lens onto a sub-path of this engine. The child shares
@@ -865,8 +886,17 @@ export class NodeEngine<T extends JsonValue = JsonValue> {
 			.map(r => ({ path: rebasePath(r.path, this.prefix), value: r.value }));
 	}
 
+	getBase(jsonPath: string): Array<{ path: string; value: JsonValue }> {
+		return this.parent.getBase(joinPath(this.prefix, jsonPath))
+			.map(r => ({ path: rebasePath(r.path, this.prefix), value: r.value }));
+	}
+
 	getValue(jsonPath: string): JsonValue {
 		return this.parent.getValue(joinPath(this.prefix, jsonPath));
+	}
+
+	getValueBase(jsonPath: string): JsonValue {
+		return this.parent.getValueBase(joinPath(this.prefix, jsonPath));
 	}
 
 	// History — pure delegation. The parent owns the stack; whether the last
