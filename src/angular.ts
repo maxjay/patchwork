@@ -1,6 +1,6 @@
 import { computed, signal, type Signal, type WritableSignal } from '@angular/core';
 import type { JsonValue } from 'jsonpath-rfc9535';
-import { Engine, NodeEngine, type DiffOp } from './engine.js';
+import { Engine, NodeEngine, type DiffOp, type KeyedGetResult } from './engine.js';
 
 // The store mutates engine.draft / engine.base in place and re-exposes the
 // same references. Angular's default reference equality would skip propagation
@@ -26,8 +26,10 @@ export interface PatchworkStore<T extends JsonValue = JsonValue> {
 	readonly base: Signal<T>;
 	readonly engine: Engine<T> | NodeEngine<T>;
 
-	get<U = JsonValue>(path: string): Signal<Array<{ path: string; value: U }>>;
-	getBase<U = JsonValue>(path: string): Signal<Array<{ path: string; value: U }>>;
+	get<U extends JsonValue = JsonValue>(path: string, options: { key: string }): Signal<Array<KeyedGetResult<U>>>;
+	get<U extends JsonValue = JsonValue>(path: string): Signal<Array<{ path: string; value: U }>>;
+	getBase<U extends JsonValue = JsonValue>(path: string, options: { key: string }): Signal<Array<KeyedGetResult<U>>>;
+	getBase<U extends JsonValue = JsonValue>(path: string): Signal<Array<{ path: string; value: U }>>;
 	getValue<U = JsonValue>(path: string): Signal<U>;
 	getValueBase<U = JsonValue>(path: string): Signal<U>;
 	diff(path?: string, options?: { key?: string }): Signal<DiffOp[]>;
@@ -80,17 +82,37 @@ class PatchworkStoreImpl<T extends JsonValue> implements PatchworkStore<T> {
 	private fireDraft() { this._draftTick.set(null); }
 	private fireBase() { this._baseTick.set(null); }
 
-	get<U = JsonValue>(path: string): Signal<Array<{ path: string; value: U }>> {
+	get<U extends JsonValue = JsonValue>(path: string, options: { key: string }): Signal<Array<KeyedGetResult<U>>>;
+	get<U extends JsonValue = JsonValue>(path: string): Signal<Array<{ path: string; value: U }>>;
+	get(path: string, options?: { key?: string }): Signal<Array<any>> {
+		if (options?.key) {
+			const key = options.key;
+			return computed(() => {
+				this._draftTick();
+				this._baseTick();
+				return this.engine.get(path, { key });
+			}, { equal: neverEqual });
+		}
 		return computed(() => {
 			this._draftTick();
-			return this.engine.get(path) as Array<{ path: string; value: U }>;
+			return this.engine.get(path);
 		}, { equal: neverEqual });
 	}
 
-	getBase<U = JsonValue>(path: string): Signal<Array<{ path: string; value: U }>> {
+	getBase<U extends JsonValue = JsonValue>(path: string, options: { key: string }): Signal<Array<KeyedGetResult<U>>>;
+	getBase<U extends JsonValue = JsonValue>(path: string): Signal<Array<{ path: string; value: U }>>;
+	getBase(path: string, options?: { key?: string }): Signal<Array<any>> {
+		if (options?.key) {
+			const key = options.key;
+			return computed(() => {
+				this._draftTick();
+				this._baseTick();
+				return this.engine.getBase(path, { key });
+			}, { equal: neverEqual });
+		}
 		return computed(() => {
 			this._baseTick();
-			return this.engine.getBase(path) as Array<{ path: string; value: U }>;
+			return this.engine.getBase(path);
 		}, { equal: neverEqual });
 	}
 

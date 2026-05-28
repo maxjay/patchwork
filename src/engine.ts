@@ -31,6 +31,16 @@ export type DiffOp =
 	| { op: OpType.Move | OpType.Copy; from: string; to: string }
 	| { op: OpType.Revert; path: string; absolutePath?: string };
 
+// Returned by get(path, { key }) and getBase(path, { key }). Merges draft + base
+// by identity so the full item list (including removed entries) is available in
+// one call, each item annotated with its current change state.
+export type KeyedGetResult<U extends JsonValue = JsonValue> = {
+	path: string | null;    // null when the item was removed (exists in base, not draft)
+	value: U;
+	identity?: JsonValue;   // absent if the key field is missing on that item
+	op: 'unchanged' | 'add' | 'replace' | 'remove';
+};
+
 // Path helpers used by NodeEngine.
 //
 // Normalized paths from paths() always end with `]` after the root token,
@@ -213,7 +223,16 @@ export class Engine<T extends JsonValue = JsonValue> {
 	// Returns every value in draft that matches the JSONPath query, each paired
 	// with its normalized path. The path is what mutating ops accept, so result
 	// entries can be fed straight into replace/delete/etc.
-	get(jsonPath: string): Array<{ path: string; value: JsonValue }> {
+	//
+	// When options.key is supplied the result is a merged draft+base view:
+	// all draft items are present (op: add/replace/unchanged) and items that
+	// exist in base but have been deleted from draft appear with path: null
+	// and op: 'remove'. Identity is extracted from the key field (or the item
+	// itself when key is '$self').
+	get<U extends JsonValue = JsonValue>(jsonPath: string, options: { key: string }): Array<KeyedGetResult<U>>;
+	get<U extends JsonValue = JsonValue>(jsonPath: string): Array<{ path: string; value: U }>;
+	get(jsonPath: string, options?: { key?: string }): Array<KeyedGetResult | { path: string; value: JsonValue }> {
+		if (options?.key) return this.keyedGet(jsonPath, options.key);
 		const matched = paths(this.draft, jsonPath);
 		return matched.map(p => ({
 			path: p,
@@ -222,7 +241,14 @@ export class Engine<T extends JsonValue = JsonValue> {
 	}
 
 	// Same as get() but reads from base instead of draft.
-	getBase(jsonPath: string): Array<{ path: string; value: JsonValue }> {
+	//
+	// When options.key is supplied returns a base-centric merged view: all base
+	// items annotated with their state relative to draft (unchanged/replace/remove).
+	// Items that exist only in draft (pending adds) are not included.
+	getBase<U extends JsonValue = JsonValue>(jsonPath: string, options: { key: string }): Array<KeyedGetResult<U>>;
+	getBase<U extends JsonValue = JsonValue>(jsonPath: string): Array<{ path: string; value: U }>;
+	getBase(jsonPath: string, options?: { key?: string }): Array<KeyedGetResult | { path: string; value: JsonValue }> {
+		if (options?.key) return this.keyedGetBase(jsonPath, options.key);
 		const matched = paths(this.base, jsonPath);
 		return matched.map(p => ({
 			path: p,
@@ -563,6 +589,111 @@ export class Engine<T extends JsonValue = JsonValue> {
 	//   - Anything else (type mismatch, or two primitives): if they differ,
 	//     emit a 'replace'. This is the leaf case — we stop recursing here
 	//     because there's no deeper structure to compare.
+	private valuesEqual(a: JsonValue, b: JsonValue): boolean {
+		const ops: DiffOp[] = [];
+		this.diffNode(a, b, '$', ops);
+		return ops.length === 0;
+	}
+
+	private extractIdentity(value: JsonValue, key: string): JsonValue | undefined {
+		if (key === '$self') {
+			return (value !== null && typeof value === 'object') ? undefined : value;
+		}
+		const id = (value as any)?.[key];
+		return id !== undefined ? id : undefined;
+	}
+
+	// Draft-centric merged view: all draft items + base-only removed items.
+	private keyedGet(jsonPath: string, key: string): Array<KeyedGetResult> {
+		const draftMatches = paths(this.draft, jsonPath).map(p => ({
+			path: p, value: this.getAt(this.segmentsFrom(p)),
+		}));
+		const baseMatches = paths(this.base, jsonPath).map(p => ({
+			path: p, value: this.getAt(this.segmentsFrom(p), this.base),
+		}));
+
+		const baseMap = new Map<JsonValue, { path: string; value: JsonValue }>();
+		for (const r of baseMatches) {
+			const id = this.extractIdentity(r.value, key);
+			if (id !== undefined) baseMap.set(id, r);
+		}
+
+		const draftMap = new Map<JsonValue, { path: string; value: JsonValue }>();
+		const result: Array<KeyedGetResult> = [];
+
+		for (const r of draftMatches) {
+			const identity = this.extractIdentity(r.value, key);
+			const baseItem = identity !== undefined ? baseMap.get(identity) : undefined;
+
+			let op: KeyedGetResult['op'];
+			if (identity === undefined) {
+				op = 'unchanged';
+			} else if (!baseMap.has(identity)) {
+				op = 'add';
+			} else if (this.valuesEqual(r.value, baseItem!.value)) {
+				op = 'unchanged';
+			} else {
+				op = 'replace';
+			}
+
+			const entry: KeyedGetResult = { path: r.path, value: r.value, op };
+			if (identity !== undefined) {
+				entry.identity = identity;
+				draftMap.set(identity, r);
+			}
+			result.push(entry);
+		}
+
+		for (const [id, r] of baseMap) {
+			if (!draftMap.has(id)) {
+				result.push({ path: null, value: r.value, identity: id, op: 'remove' });
+			}
+		}
+
+		return result;
+	}
+
+	// Base-centric merged view: all base items annotated with their state relative
+	// to draft. Items only in draft (pending adds) are not included.
+	private keyedGetBase(jsonPath: string, key: string): Array<KeyedGetResult> {
+		const draftMatches = paths(this.draft, jsonPath).map(p => ({
+			path: p, value: this.getAt(this.segmentsFrom(p)),
+		}));
+		const baseMatches = paths(this.base, jsonPath).map(p => ({
+			path: p, value: this.getAt(this.segmentsFrom(p), this.base),
+		}));
+
+		const draftMap = new Map<JsonValue, { path: string; value: JsonValue }>();
+		for (const r of draftMatches) {
+			const id = this.extractIdentity(r.value, key);
+			if (id !== undefined) draftMap.set(id, r);
+		}
+
+		const result: Array<KeyedGetResult> = [];
+
+		for (const r of baseMatches) {
+			const identity = this.extractIdentity(r.value, key);
+			const draftItem = identity !== undefined ? draftMap.get(identity) : undefined;
+
+			let op: KeyedGetResult['op'];
+			if (identity === undefined) {
+				op = 'unchanged';
+			} else if (!draftMap.has(identity)) {
+				op = 'remove';
+			} else if (this.valuesEqual(r.value, draftItem!.value)) {
+				op = 'unchanged';
+			} else {
+				op = 'replace';
+			}
+
+			const entry: KeyedGetResult = { path: r.path, value: r.value, op };
+			if (identity !== undefined) entry.identity = identity;
+			result.push(entry);
+		}
+
+		return result;
+	}
+
 	private diffArrayByKey(
 		a: JsonValue[], b: JsonValue[],
 		path: string, key: string, ops: DiffOp[]
@@ -881,12 +1012,24 @@ export class NodeEngine<T extends JsonValue = JsonValue> {
 
 	// Reads — forward then rebase any returned paths back into the child frame.
 
-	get(jsonPath: string): Array<{ path: string; value: JsonValue }> {
+	get<U extends JsonValue = JsonValue>(jsonPath: string, options: { key: string }): Array<KeyedGetResult<U>>;
+	get<U extends JsonValue = JsonValue>(jsonPath: string): Array<{ path: string; value: U }>;
+	get(jsonPath: string, options?: { key?: string }): Array<any> {
+		if (options?.key) {
+			return (this.parent.get(joinPath(this.prefix, jsonPath), { key: options.key }) as Array<KeyedGetResult>)
+				.map(r => ({ ...r, path: r.path !== null ? rebasePath(r.path, this.prefix) : null }));
+		}
 		return this.parent.get(joinPath(this.prefix, jsonPath))
 			.map(r => ({ path: rebasePath(r.path, this.prefix), value: r.value }));
 	}
 
-	getBase(jsonPath: string): Array<{ path: string; value: JsonValue }> {
+	getBase<U extends JsonValue = JsonValue>(jsonPath: string, options: { key: string }): Array<KeyedGetResult<U>>;
+	getBase<U extends JsonValue = JsonValue>(jsonPath: string): Array<{ path: string; value: U }>;
+	getBase(jsonPath: string, options?: { key?: string }): Array<any> {
+		if (options?.key) {
+			return (this.parent.getBase(joinPath(this.prefix, jsonPath), { key: options.key }) as Array<KeyedGetResult>)
+				.map(r => ({ ...r, path: r.path !== null ? rebasePath(r.path, this.prefix) : null }));
+		}
 		return this.parent.getBase(joinPath(this.prefix, jsonPath))
 			.map(r => ({ path: rebasePath(r.path, this.prefix), value: r.value }));
 	}

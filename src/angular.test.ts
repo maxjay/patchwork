@@ -245,6 +245,39 @@ describe('PatchworkStore ephemeral', () => {
 	});
 });
 
+describe('PatchworkStore.get with key', () => {
+	it('returns a merged draft+base signal', () => {
+		const store = createPatchworkStore<any>({ items: [{ id: 1 }, { id: 2 }] });
+		const items = store.get('$.items[*]', { key: 'id' });
+		expect(items().every(r => r.op === 'unchanged')).toBe(true);
+	});
+
+	it('fires when draft changes (delete)', () => {
+		const store = createPatchworkStore<any>({ items: [{ id: 1 }, { id: 2 }] });
+		const items = store.get('$.items[*]', { key: 'id' });
+		store.delete('$.items[0]');
+		expect(items().find(r => r.identity === 1)?.op).toBe('remove');
+		expect(items().find(r => r.identity === 1)?.path).toBeNull();
+	});
+
+	it('fires when base changes (accept)', () => {
+		const store = createPatchworkStore<any>({ items: [{ id: 1 }] });
+		const items = store.get('$.items[*]', { key: 'id' });
+		store.delete('$.items[0]');
+		expect(items().find(r => r.identity === 1)?.op).toBe('remove');
+		store.accept();
+		expect(items().find(r => r.identity === 1)).toBeUndefined();
+	});
+
+	it('getBase with key annotates base items with draft state', () => {
+		const store = createPatchworkStore<any>({ items: [{ id: 1 }, { id: 2 }] });
+		const base = store.getBase('$.items[*]', { key: 'id' });
+		store.delete('$.items[0]');
+		expect(base().find(r => r.identity === 1)?.op).toBe('remove');
+		expect(base().find(r => r.identity === 2)?.op).toBe('unchanged');
+	});
+});
+
 describe('fromEngine', () => {
 	it('wraps an existing engine', () => {
 		const engine = new Engine<any>({ x: 1 });

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { DiffOp, Engine } from './engine';
+import { DiffOp, Engine, type KeyedGetResult } from './engine';
 
 describe('Engine.replace', () => {
 	it('replaces a value in an object', () => {
@@ -1283,5 +1283,109 @@ describe('Engine — $self set diff', () => {
 		const e = new Engine<any>({ tags: [['a'], ['b']] }, { schema });
 		e.replace('$.tags[0]', ['c']);
 		expect(() => e.diff()).toThrow(/\$self.*requires primitive items/);
+	});
+});
+
+describe('Engine.get with key', () => {
+	it('marks unchanged items', () => {
+		const e = new Engine<any>({ items: [{ id: 1, name: 'a' }, { id: 2, name: 'b' }] });
+		const result = e.get('$.items[*]', { key: 'id' });
+		expect(result).toEqual([
+			{ path: "$['items'][0]", value: { id: 1, name: 'a' }, identity: 1, op: 'unchanged' },
+			{ path: "$['items'][1]", value: { id: 2, name: 'b' }, identity: 2, op: 'unchanged' },
+		]);
+	});
+
+	it('marks added items (in draft, not in base)', () => {
+		const e = new Engine<any>({ items: [{ id: 1, name: 'a' }] });
+		e.add('$.items[1]', { id: 2, name: 'b' });
+		const result = e.get('$.items[*]', { key: 'id' });
+		expect(result.find(r => r.identity === 2)?.op).toBe('add');
+		expect(result.find(r => r.identity === 1)?.op).toBe('unchanged');
+	});
+
+	it('appends removed items with path: null', () => {
+		const e = new Engine<any>({ items: [{ id: 1, name: 'a' }, { id: 2, name: 'b' }] });
+		e.delete('$.items[0]');
+		const result = e.get('$.items[*]', { key: 'id' });
+		const removed = result.find(r => r.identity === 1);
+		expect(removed).toEqual({ path: null, value: { id: 1, name: 'a' }, identity: 1, op: 'remove' });
+		expect(result.find(r => r.identity === 2)?.op).toBe('unchanged');
+	});
+
+	it('marks modified items as replace', () => {
+		const e = new Engine<any>({ items: [{ id: 1, name: 'a' }, { id: 2, name: 'b' }] });
+		e.replace('$.items[0].name', 'updated');
+		const result = e.get('$.items[*]', { key: 'id' });
+		expect(result.find(r => r.identity === 1)?.op).toBe('replace');
+		expect(result.find(r => r.identity === 2)?.op).toBe('unchanged');
+	});
+
+	it('handles concurrent add + remove', () => {
+		const e = new Engine<any>({ items: [{ id: 1 }, { id: 2 }] });
+		e.delete('$.items[0]');
+		e.add('$.items[1]', { id: 3 });
+		const result = e.get('$.items[*]', { key: 'id' });
+		expect(result.find(r => r.identity === 1)?.op).toBe('remove');
+		expect(result.find(r => r.identity === 2)?.op).toBe('unchanged');
+		expect(result.find(r => r.identity === 3)?.op).toBe('add');
+	});
+
+	it('draft items appear first, removed items appended at end', () => {
+		const e = new Engine<any>({ items: [{ id: 1 }, { id: 2 }, { id: 3 }] });
+		e.delete('$.items[0]');
+		const result = e.get('$.items[*]', { key: 'id' });
+		const ops = result.map(r => r.op);
+		expect(ops.indexOf('remove')).toBeGreaterThan(ops.lastIndexOf('unchanged'));
+	});
+
+	it('items missing the key field are included without identity', () => {
+		const e = new Engine<any>({ items: [{ id: 1 }, { name: 'no-id' }] });
+		const result = e.get('$.items[*]', { key: 'id' });
+		const noId = result.find(r => r.identity === undefined);
+		expect(noId).toBeDefined();
+		expect(noId!.op).toBe('unchanged');
+	});
+
+	it('works with $self key for primitive arrays', () => {
+		const e = new Engine<any>({ tags: ['a', 'b', 'c'] });
+		e.delete('$.tags[0]');
+		e.add('$.tags[2]', 'd');
+		const result = e.get('$.tags[*]', { key: '$self' });
+		expect(result.find(r => r.identity === 'a')?.op).toBe('remove');
+		expect(result.find(r => r.identity === 'd')?.op).toBe('add');
+		expect(result.find(r => r.identity === 'b')?.op).toBe('unchanged');
+	});
+});
+
+describe('Engine.getBase with key', () => {
+	it('returns base items annotated with their state relative to draft', () => {
+		const e = new Engine<any>({ items: [{ id: 1, name: 'a' }, { id: 2, name: 'b' }] });
+		e.replace('$.items[0].name', 'updated');
+		e.delete('$.items[1]');
+		const result = e.getBase('$.items[*]', { key: 'id' });
+		expect(result.find(r => r.identity === 1)?.op).toBe('replace');
+		expect(result.find(r => r.identity === 2)?.op).toBe('remove');
+	});
+
+	it('does not include draft-only items (base-centric view)', () => {
+		const e = new Engine<any>({ items: [{ id: 1 }] });
+		e.add('$.items[1]', { id: 2 });
+		const result = e.getBase('$.items[*]', { key: 'id' });
+		expect(result.find(r => r.identity === 2)).toBeUndefined();
+		expect(result.find(r => r.identity === 1)?.op).toBe('unchanged');
+	});
+});
+
+describe('NodeEngine.get with key', () => {
+	it('scopes the keyed get to the child subtree', () => {
+		const e = new Engine<any>({ servers: [{ id: 'a' }, { id: 'b' }], other: [] });
+		const child = e.getNodeEngine('$.servers');
+		e.delete('$.servers[0]');
+		const result = child.get('$[*]', { key: 'id' });
+		expect(result.find(r => r.identity === 'a')?.op).toBe('remove');
+		expect(result.find(r => r.identity === 'b')?.op).toBe('unchanged');
+		// after deleting index 0, 'b' shifts to $[0] in draft
+		expect(result.find(r => r.identity === 'b')?.path).toBe('$[0]');
 	});
 });

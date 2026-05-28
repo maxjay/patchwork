@@ -64,7 +64,9 @@ const store = fromEngine(engine);
 | `store.draft` | `Signal<T>` | whole draft |
 | `store.base` | `Signal<T>` | whole base |
 | `store.get<U>(path)` | `Signal<Array<{path, value: U}>>` | draft, JSONPath query |
+| `store.get<U>(path, { key })` | `Signal<Array<KeyedGetResult<U>>>` | draft+base merged, includes removed items |
 | `store.getBase<U>(path)` | `Signal<Array<{path, value: U}>>` | base, JSONPath query |
+| `store.getBase<U>(path, { key })` | `Signal<Array<KeyedGetResult<U>>>` | base items annotated with draft state |
 | `store.getValue<U>(path)` | `Signal<U>` | draft, strict single-match |
 | `store.getValueBase<U>(path)` | `Signal<U>` | base, strict single-match |
 | `store.diff(path?, options?)` | `Signal<DiffOp[]>` | structural diff |
@@ -129,43 +131,31 @@ Escape hatch. Returns the underlying `Engine` or `NodeEngine`. Use for anything 
 
 ### Change-highlighting UI
 
-`diff` doubles as both a "has unsaved changes" indicator and a per-row state source. With identity-keyed diffing, the `identity` field on `add`/`remove` ops tells you exactly which item was affected — no path parsing required:
+`get(path, { key })` returns a merged draft+base view in one signal — every item including
+removed ones, each carrying an `op` field (`unchanged`, `add`, `replace`, `remove`). No
+manual merge with `diff` required; the template loops over a single source:
 
 ```ts
 @Component({
   template: `
-    @for (item of items(); track item.id) {
-      <div [class]="stateOf(item.id)">{{ item.name }}</div>
+    @for (row of rows(); track row.identity) {
+      <div [class]="row.op">{{ row.value.name }}</div>
     }
-    <button (click)="store.accept()" [disabled]="!diff().length">Save</button>
-    <button (click)="store.decline()" [disabled]="!diff().length">Discard</button>
+    <button (click)="store.accept()" [disabled]="!hasChanges()">Save</button>
+    <button (click)="store.decline()" [disabled]="!hasChanges()">Discard</button>
   `,
 })
 class ItemList {
-  store = createPatchworkStore<any>(
-    { items: [...] },
-    {
-      schema: {
-        type: 'object',
-        properties: {
-          items: { type: 'array', 'x-key': 'id', items: { type: 'object' } },
-        },
-      },
-    },
-  );
+  store = createPatchworkStore<any>({ items: [...] });
 
-  items = this.store.getValue<Item[]>('$.items');
-  diff  = this.store.diff('$.items');
-
-  stateOf(id: string): string {
-    const ops = this.diff();
-    if (ops.some(o => o.op === 'add'    && o.identity === id)) return 'added';
-    if (ops.some(o => o.op === 'remove' && o.identity === id)) return 'removed';
-    if (ops.some(o => o.op === 'replace'))                     return 'modified';
-    return 'unchanged';
-  }
+  rows       = this.store.get<Item>('$.items[*]', { key: 'id' });
+  hasChanges = computed(() => this.rows().some(r => r.op !== 'unchanged'));
 }
 ```
+
+Removed items appear with `path: null` and `op: 'remove'` — not in draft but included so
+you can render ghost rows. `diff` is still available for raw patch operations; `get` with
+key is the right tool when you just need per-row state.
 
 ### Form binding with ephemeral commit
 
