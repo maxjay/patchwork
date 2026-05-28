@@ -11,6 +11,7 @@
   <a href="#array-diffing">Array diffing</a> &middot;
   <a href="#scoped-lenses">Scoped lenses</a> &middot;
   <a href="#llm-integration">LLM integration</a> &middot;
+  <a href="#angular-integration">Angular</a> &middot;
   <a href="#api">API</a>
 </p>
 
@@ -289,6 +290,33 @@ const tools = createEngineTools(scoped);
 
 For MCP servers and agentic loops, see [docs/llms.md](docs/llms.md).
 
+## Angular integration
+
+`@maxjay/patchwork/angular` wraps an `Engine` in a reactive store built on Angular Signals (Angular 16+). All reads are exposed as `Signal`s; mutations fire them automatically — no `ChangeDetectorRef`, no `NgZone`.
+
+```ts
+import { createPatchworkStore } from '@maxjay/patchwork/angular';
+
+@Component({
+  template: `
+    <input [value]="port()" (input)="setPort($event)">
+    <button (click)="store.accept()" [disabled]="!diff().length">Save</button>
+    <button (click)="store.decline()" [disabled]="!diff().length">Discard</button>
+  `,
+})
+class ServerSettings {
+  store = createPatchworkStore({ server: { port: 8080 } });
+  port  = this.store.getValue<number>('$.server.port');
+  diff  = this.store.diff();
+
+  setPort(e: Event) {
+    this.store.replace('$.server.port', +(e.target as HTMLInputElement).value);
+  }
+}
+```
+
+See **[docs/angular.md](docs/angular.md)** for the full API, typed generics, change-highlighting UI, ephemeral form binding, scoped sub-stores, and service patterns.
+
 ## API
 
 ### `Engine<T>`
@@ -351,16 +379,18 @@ type DiffOp =
 ### Entrypoints
 
 ```
-@maxjay/patchwork         Engine, NodeEngine, DiffOp, OpType
-@maxjay/patchwork/tools   createEngineTools, Tool, EngineLike
-@maxjay/patchwork/chat    runAgentLoop, AgentMessage, ModelAdapter, NativeAdapter, PromptAdapter, toAgentTools
-@maxjay/patchwork/mcp     toMcpTools, handleMcpCall
+@maxjay/patchwork          Engine, NodeEngine, DiffOp, OpType
+@maxjay/patchwork/tools    createEngineTools, Tool, EngineLike
+@maxjay/patchwork/chat     runAgentLoop, AgentMessage, ModelAdapter, NativeAdapter, PromptAdapter, toAgentTools
+@maxjay/patchwork/mcp      toMcpTools, handleMcpCall
+@maxjay/patchwork/angular  createPatchworkStore, fromEngine, PatchworkStore
 ```
 
 ---
 
 For deeper coverage of the engine internals, see [docs/engine.md](docs/engine.md).
 For LLM integration, adapters, and MCP, see [docs/llms.md](docs/llms.md).
+For the Angular Signals adapter, see [docs/angular.md](docs/angular.md).
 
 ## Contributors
 

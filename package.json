@@ -1,6 +1,6 @@
 {
   "name": "@maxjay/patchwork",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "A JSON editing engine with base/draft, diff, undo, and scoped lenses.",
   "type": "module",
   "main": "dist/index.js",
@@ -24,6 +24,18 @@
     "./mcp": {
       "import": "./dist/mcp.js",
       "types": "./dist/mcp.d.ts"
+    },
+    "./angular": {
+      "import": "./dist/angular.js",
+      "types": "./dist/angular.d.ts"
+    }
+  },
+  "peerDependencies": {
+    "@angular/core": ">=16.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@angular/core": {
+      "optional": true
     }
   },
   "scripts": {
@@ -47,9 +59,21 @@
   ],
   "author": "Max <maxjay2000@gmail.com>",
   "contributors": [
-    { "name": "Hanqi Zhou", "email": "hz645@cornell.edu", "url": "https://github.com/hanqi-zhou" },
-    { "name": "Beth Grant", "email": "bethgrant@live.co.uk", "url": "https://github.com/bethGrant" },
-    { "name": "George Wright", "email": "wrightgeorge42@gmail.com", "url": "https://github.com/wrightg42" }
+    {
+      "name": "Hanqi Zhou",
+      "email": "hz645@cornell.edu",
+      "url": "https://github.com/hanqi-zhou"
+    },
+    {
+      "name": "Beth Grant",
+      "email": "bethgrant@live.co.uk",
+      "url": "https://github.com/bethGrant"
+    },
+    {
+      "name": "George Wright",
+      "email": "wrightgeorge42@gmail.com",
+      "url": "https://github.com/wrightg42"
+    }
   ],
   "license": "Apache-2.0",
   "bugs": {
@@ -60,7 +84,9 @@
     "access": "public"
   },
   "devDependencies": {
+    "@angular/core": "^21.2.14",
     "@types/node": "^25.6.0",
+    "rxjs": "^7.8.2",
     "typescript": "^6.0.3",
     "vitest": "^4.1.5"
   },
