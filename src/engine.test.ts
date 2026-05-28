@@ -140,6 +140,65 @@ describe('Engine.add (creates missing intermediates)', () => {
 	});
 });
 
+describe('Engine.add ([-] append sentinel)', () => {
+	it('appends to the end of an existing array', () => {
+		const e = new Engine<any>({ items: ['a', 'b'] });
+		e.add('$.items[-]', 'c');
+		expect(e.draft.items).toEqual(['a', 'b', 'c']);
+	});
+
+	it('appends multiple times, each call resolves fresh length', () => {
+		const e = new Engine<any>({ items: ['a'] });
+		e.add('$.items[-]', 'b');
+		e.add('$.items[-]', 'c');
+		expect(e.draft.items).toEqual(['a', 'b', 'c']);
+	});
+
+	it('appends to an empty array', () => {
+		const e = new Engine<any>({ items: [] });
+		e.add('$.items[-]', 'first');
+		expect(e.draft.items).toEqual(['first']);
+	});
+
+	it('creates the array when the parent key does not exist', () => {
+		const e = new Engine<any>({});
+		e.add('$.newItems[-]', 'first');
+		expect(e.draft.newItems).toEqual(['first']);
+	});
+
+	it('undo removes the appended element', () => {
+		const e = new Engine<any>({ items: ['a', 'b'] });
+		e.add('$.items[-]', 'c');
+		e.undo();
+		expect(e.draft.items).toEqual(['a', 'b']);
+	});
+
+	it('redo re-appends after undo', () => {
+		const e = new Engine<any>({ items: ['a', 'b'] });
+		e.add('$.items[-]', 'c');
+		e.undo();
+		e.redo();
+		expect(e.draft.items).toEqual(['a', 'b', 'c']);
+	});
+
+	it('two appends undo independently in reverse order', () => {
+		const e = new Engine<any>({ items: [] });
+		e.add('$.items[-]', 'x');
+		e.add('$.items[-]', 'y');
+		e.undo();
+		expect(e.draft.items).toEqual(['x']);
+		e.undo();
+		expect(e.draft.items).toEqual([]);
+	});
+
+	it('NodeEngine.add appends via [-] through scoped prefix', () => {
+		const e = new Engine<any>({ content: { items: ['a', 'b'] } });
+		const node = e.getNodeEngine<any>('$.content');
+		node.add('$.items[-]', 'c');
+		expect(e.draft.content.items).toEqual(['a', 'b', 'c']);
+	});
+});
+
 describe('Engine.delete', () => {
 	it('removes a key from an object', () => {
 		const e = new Engine<any>({ a: 1, b: 2 });

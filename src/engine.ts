@@ -269,7 +269,21 @@ export class Engine<T extends JsonValue = JsonValue> {
 		return new NodeEngine<U>(this as Engine<JsonValue>, matched[0]);
 	}
 
+	// Detects the [-] append sentinel at the end of a path and replaces it with
+	// the current length of the target array, making the path point just past
+	// the last element. If the array doesn't exist yet, resolves to [0] so
+	// that upsertAt can create it.
+	private resolveAppendSentinel(jsonPath: string): string {
+		if (!jsonPath.endsWith('[-]')) return jsonPath;
+		const parentPath = jsonPath.slice(0, -3);
+		const matched = paths(this.draft, parentPath);
+		if (matched.length !== 1) return `${parentPath}[0]`;
+		const arr = this.getAt(this.segmentsFrom(matched[0]));
+		return `${parentPath}[${Array.isArray(arr) ? arr.length : 0}]`;
+	}
+
 	add(jsonPath: string, value: any): void {
+		jsonPath = this.resolveAppendSentinel(jsonPath);
 		const normalizedPaths = this.jsonPathToNormalizedPaths(jsonPath);
 		if (normalizedPaths.length === 0) {
 			// Path didn't resolve to anything in the document. Two reasons this happens:
