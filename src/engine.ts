@@ -591,7 +591,7 @@ export class Engine<T extends JsonValue = JsonValue> {
 			if (!aMap.has(id)) ops.push({ op: OpType.Add, path: `${path}[${i}]`, value: item, identity: id });
 
 		for (const [id, { item: bItem, i: bIndex }] of bMap)
-			if (aMap.has(id)) this.diffNode(aMap.get(id)!.item, bItem, `${path}[${bIndex}]`, ops);
+			if (aMap.has(id)) this.diffNode(aMap.get(id)!.item, bItem, `${path}[${bIndex}]`, ops, id);
 	}
 
 	// $self set diff: the item itself is its identity. Reduces to symmetric set
@@ -632,17 +632,18 @@ export class Engine<T extends JsonValue = JsonValue> {
 			if (!aMap.has(item)) ops.push({ op: OpType.Add, path: `${path}[${i}]`, value: item, identity: item });
 	}
 
-	private diffNode(a: JsonValue, b: JsonValue, path: string, ops: DiffOp[]): void {
+	private diffNode(a: JsonValue, b: JsonValue, path: string, ops: DiffOp[], identity?: JsonValue): void {
 		if (Array.isArray(a) && Array.isArray(b)) {
 			const key = this.keyMap.get(path) ?? this.keyMap.get(toPathPattern(path));
 			if (key === '$self') { this.diffArrayBySelf(a, b, path, ops); return; }
+			// diffArrayByKey stamps its own identity per item, so outer identity is not forwarded
 			if (key) { this.diffArrayByKey(a, b, path, key, ops); return; }
 			const maxLen = Math.max(a.length, b.length);
 			for (let i = 0; i < maxLen; i++) {
 				const child = `${path}[${i}]`;
-				if (i >= a.length) ops.push({ op: OpType.Add, path: child, value: b[i] });
-				else if (i >= b.length) ops.push({ op: OpType.Remove, path: child, value: a[i] });
-				else this.diffNode(a[i], b[i], child, ops);
+				if (i >= a.length) ops.push({ op: OpType.Add, path: child, value: b[i], ...(identity !== undefined && { identity }) });
+				else if (i >= b.length) ops.push({ op: OpType.Remove, path: child, value: a[i], ...(identity !== undefined && { identity }) });
+				else this.diffNode(a[i], b[i], child, ops, identity);
 			}
 		} else if (isPlainObject(a) && isPlainObject(b)) {
 			const ao = a as Record<string, JsonValue>;
@@ -650,14 +651,14 @@ export class Engine<T extends JsonValue = JsonValue> {
 			const allKeys = new Set([...Object.keys(ao), ...Object.keys(bo)]);
 			for (const key of allKeys) {
 				const child = `${path}['${key}']`;
-				if (!(key in ao)) ops.push({ op: OpType.Add, path: child, value: bo[key] });
-				else if (!(key in bo)) ops.push({ op: OpType.Remove, path: child, value: ao[key] });
-				else this.diffNode(ao[key], bo[key], child, ops);
+				if (!(key in ao)) ops.push({ op: OpType.Add, path: child, value: bo[key], ...(identity !== undefined && { identity }) });
+				else if (!(key in bo)) ops.push({ op: OpType.Remove, path: child, value: ao[key], ...(identity !== undefined && { identity }) });
+				else this.diffNode(ao[key], bo[key], child, ops, identity);
 			}
 		} else if (a !== b) {
 			// Covers: same-type primitives with different values, and type changes
 			// (e.g. object → array). In both cases there's nothing to recurse into.
-			ops.push({ op: OpType.Replace, path, oldValue: a, value: b });
+			ops.push({ op: OpType.Replace, path, oldValue: a, value: b, ...(identity !== undefined && { identity }) });
 		}
 	}
 

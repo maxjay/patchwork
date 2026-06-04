@@ -1172,7 +1172,7 @@ describe('Engine — identity-keyed array diff', () => {
 		const e = new Engine({ items: [{ id: 1, v: 'a' }, { id: 2, v: 'b' }] }, { schema });
 		e.replace('$.items[0].v', 'z');
 		expect(e.diff()).toEqual([
-			{ op: 'replace', path: "$['items'][0]['v']", oldValue: 'a', value: 'z' },
+			{ op: 'replace', path: "$['items'][0]['v']", oldValue: 'a', value: 'z', identity: 1 },
 		]);
 	});
 
@@ -1220,7 +1220,7 @@ describe('Engine — identity-keyed array diff', () => {
 		const lens = e.getNodeEngine('$.items');
 		e.replace('$.items[0].v', 'z');
 		expect(lens.diff()).toEqual([
-			{ op: 'replace', path: "$[0]['v']", absolutePath: "$['items'][0]['v']", oldValue: 'a', value: 'z' },
+			{ op: 'replace', path: "$[0]['v']", absolutePath: "$['items'][0]['v']", oldValue: 'a', value: 'z', identity: 1 },
 		]);
 	});
 
@@ -1238,9 +1238,7 @@ describe('Engine — identity-keyed array diff', () => {
 		const removeOp = ops.find(o => o.op === 'remove');
 		const replaceOp = ops.find(o => o.op === 'replace');
 		expect(removeOp).toMatchObject({ op: 'remove', value: { id: 2, v: 'b' }, identity: 2 });
-		expect(replaceOp).toMatchObject({ op: 'replace', value: 'z' });
-		// identity is only on the element-level remove, not on the field-level replace
-		expect((replaceOp as any).identity).toBeUndefined();
+		expect(replaceOp).toMatchObject({ op: 'replace', value: 'z', identity: 3 });
 	});
 
 	it('nested: deleting a child emits identity; parent path is navigable in draft', () => {
