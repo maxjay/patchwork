@@ -31,6 +31,22 @@ export type DiffOp =
 	| { op: OpType.Move | OpType.Copy; from: string; to: string }
 	| { op: OpType.Revert; path: string; absolutePath?: string };
 
+// One element of the merged identity view returned by items(). Entries
+// deliberately carry no document paths — identity is the handle, and acting
+// on an entry means addressing it by identity filter. Pure data, so the view
+// is JSON-serializable as-is.
+export type ItemEntry<V extends JsonValue = JsonValue> = {
+	// The x-key value (or the item itself under x-key: '$self').
+	identity: JsonValue;
+	// Absent for unchanged items.
+	op?: OpType.Add | OpType.Remove | OpType.Replace;
+	// The draft item — or the base item when op is Remove (the ghost content).
+	value: V;
+	// Field-level ops for Replace entries. Paths are relative to the item
+	// ($['region']), with identity filters for any nested keyed arrays.
+	changes?: DiffOp[];
+};
+
 // Path helpers used by NodeEngine.
 //
 // Normalized paths from paths() always end with `]` after the root token,
@@ -539,6 +555,94 @@ export class Engine<T extends JsonValue = JsonValue> {
 			cur = cur === null || cur === undefined ? undefined : cur[seg];
 		}
 		return segsToPath(out);
+	}
+
+	// Merged identity view of a keyed array — the read model a list UI needs.
+	// Returns the union of base and draft elements matched by identity, each
+	// labelled with the op that describes its state:
+	//
+	//   (no op)  unchanged
+	//   add      present in draft only
+	//   remove   present in base only — value carries the base item (ghost)
+	//   replace  present in both with differences — changes carries the
+	//            field-level ops, paths relative to the item
+	//
+	// Requires an identity key: x-key from the schema, or options.key inline.
+	// Draft items come first in draft order, then removed items in base order.
+	items<V extends JsonValue = JsonValue>(arrayPath: string, options?: { key?: string }): ItemEntry<V>[] {
+		const resolved = [...new Set([...paths(this.draft, arrayPath), ...paths(this.base, arrayPath)])];
+		if (resolved.length !== 1) {
+			throw new Error(`items: path must resolve to exactly one array, got ${resolved.length}`);
+		}
+		const normPath = resolved[0];
+		const segs = this.segmentsFrom(normPath);
+		const pattern = segmentsToPattern(segs);
+		const key = options?.key ?? this.keyMap.get(pattern);
+		if (!key) {
+			throw new Error(`items: no identity key for ${normPath} — declare 'x-key' in the schema or pass options.key`);
+		}
+		const baseVal = this.getAt(segs, this.base);
+		const draftVal = this.getAt(segs, this.draft);
+		if (!Array.isArray(baseVal) && !Array.isArray(draftVal)) {
+			throw new Error(`items: ${normPath} is not an array in draft or base`);
+		}
+		const a = Array.isArray(baseVal) ? baseVal : [];
+		const b = Array.isArray(draftVal) ? draftVal : [];
+
+		if (key === '$self') return this.itemsBySelf(a, b, normPath) as ItemEntry<V>[];
+
+		const aMap = this.buildIdentityMap(a, key, segs);
+		const bMap = this.buildIdentityMap(b, key, segs);
+
+		const entries: ItemEntry[] = [];
+		for (const [id, item] of bMap) {
+			if (!aMap.has(id)) {
+				entries.push({ identity: id, op: OpType.Add, value: item });
+				continue;
+			}
+			// Item-relative diff: segments start fresh at the item (so paths come
+			// out as $['region']) while the pattern stays document-rooted so
+			// nested x-keys keep resolving.
+			const ops: DiffOp[] = [];
+			this.diffNode(aMap.get(id)!, item, [], `${pattern}[*]`, ops);
+			if (ops.length === 0) entries.push({ identity: id, value: item });
+			else entries.push({ identity: id, op: OpType.Replace, value: item, changes: ops });
+		}
+		for (const [id, item] of aMap) {
+			if (!bMap.has(id)) entries.push({ identity: id, op: OpType.Remove, value: item });
+		}
+		return entries as ItemEntry<V>[];
+	}
+
+	// $self variant: the item is its own identity. Set semantics — duplicates
+	// collapse, reorders are invisible, and replace can never occur because
+	// equal primitives are the same set member. Same primitive-only restriction
+	// as diffArrayBySelf, for the same reason (reference equality on objects).
+	private itemsBySelf(a: JsonValue[], b: JsonValue[], path: string): ItemEntry[] {
+		for (const arr of [a, b]) {
+			for (const item of arr) {
+				if (item !== null && typeof item === 'object') {
+					throw new Error(
+						`items: x-key '$self' at ${path} requires primitive items, got ` +
+						`${Array.isArray(item) ? 'array' : 'object'}. ` +
+						`Use x-key: '<field>' for arrays of objects.`
+					);
+				}
+			}
+		}
+		const aSet = new Set(a);
+		const entries: ItemEntry[] = [];
+		const seen = new Set<JsonValue>();
+		for (const item of b) {
+			if (seen.has(item)) continue;
+			seen.add(item);
+			if (aSet.has(item)) entries.push({ identity: item, value: item });
+			else entries.push({ identity: item, op: OpType.Add, value: item });
+		}
+		for (const item of aSet) {
+			if (!seen.has(item)) entries.push({ identity: item, op: OpType.Remove, value: item });
+		}
+		return entries;
 	}
 
 	private moveOrCopy(from: string, to: string, isMove: boolean): void {
@@ -1088,6 +1192,12 @@ export class NodeEngine<T extends JsonValue = JsonValue> {
 				if ('path' in rebased) return { ...rebased, absolutePath: (op as any).path };
 				return rebased;
 			});
+	}
+
+	// Identity view — entries carry no paths, so nothing needs rebasing;
+	// only the array path itself is joined into the parent frame.
+	items<V extends JsonValue = JsonValue>(arrayPath: string, options?: { key?: string }): ItemEntry<V>[] {
+		return this.parent.items<V>(joinPath(this.prefix, arrayPath), options);
 	}
 
 	// Nested children compose by joining paths and creating a fresh lens

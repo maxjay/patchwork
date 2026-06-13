@@ -1,6 +1,6 @@
 import { computed, signal, type Signal, type WritableSignal } from '@angular/core';
 import type { JsonValue } from 'jsonpath-rfc9535';
-import { Engine, NodeEngine, type DiffOp } from './engine.js';
+import { Engine, NodeEngine, type DiffOp, type ItemEntry } from './engine.js';
 
 // The store mutates engine.draft / engine.base in place and re-exposes the
 // same references. Angular's default reference equality would skip propagation
@@ -31,6 +31,7 @@ export interface PatchworkStore<T extends JsonValue = JsonValue> {
 	getValue<U = JsonValue>(path: string): Signal<U>;
 	getValueBase<U = JsonValue>(path: string): Signal<U>;
 	diff(path?: string, options?: { key?: string }): Signal<DiffOp[]>;
+	items<V extends JsonValue = JsonValue>(path: string, options?: { key?: string }): Signal<ItemEntry<V>[]>;
 
 	add(path: string, value: any): void;
 	replace(path: string, value: any): void;
@@ -113,6 +114,15 @@ class PatchworkStoreImpl<T extends JsonValue> implements PatchworkStore<T> {
 			this._draftTick();
 			this._baseTick();
 			return this.engine.diff(path, options);
+		}, { equal: neverEqual });
+	}
+
+	items<V extends JsonValue = JsonValue>(path: string, options?: { key?: string }): Signal<ItemEntry<V>[]> {
+		// Both ticks: removed-item ghosts come from base, the rest from draft.
+		return computed(() => {
+			this._draftTick();
+			this._baseTick();
+			return this.engine.items<V>(path, options);
 		}, { equal: neverEqual });
 	}
 

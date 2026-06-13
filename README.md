@@ -247,6 +247,30 @@ engine.diff();
 
 Restricted to primitive items. For sets of objects, add a stable ID field and use `x-key: '<field>'`.
 
+### Reading a keyed array for UI: `items()`
+
+`diff()` answers "what changed" as a flat op list. A list UI needs a different read model: *every* element — including unchanged ones and removed ghosts — labelled with its state. `items()` returns the union of base and draft elements matched by identity:
+
+```ts
+engine.items('$.users');
+// [
+//   { identity: 'a@x.com',                value: { email: 'a@x.com', region: 'us' } },
+//   { identity: 'c@x.com', op: 'replace', value: { email: 'c@x.com', region: 'eu' },
+//     changes: [ { op: 'replace', path: "$['region']", oldValue: 'us', value: 'eu' } ] },
+//   { identity: 'd@x.com', op: 'add',     value: { email: 'd@x.com', region: 'ap' } },
+//   { identity: 'b@x.com', op: 'remove',  value: { email: 'b@x.com', region: 'us' } },
+// ]
+```
+
+- No `op` — unchanged.
+- `add` — present in draft only.
+- `remove` — present in base only; `value` carries the base item, ready to render as a ghost row.
+- `replace` — present in both with differences; `changes` carries the field-level ops with paths **relative to the item** (identity filters for any nested keyed arrays).
+
+Entries deliberately contain no document paths — `identity` is the handle. To act on an entry, address it by identity filter: `engine.delete("$.users[?@.email == 'd@x.com']")`. Draft items come first in draft order, then removed items in base order; reorder freely in the UI.
+
+The identity key comes from the schema's `x-key`, or inline: `engine.items('$.users', { key: 'email' })`. `x-key: '$self'` arrays work too — set semantics, so entries are only ever unchanged / `add` / `remove`.
+
 ## Scoped lenses
 
 `getNodeEngine(path)` returns a `NodeEngine` — a lens onto a subtree. It owns no state; reads resolve through the parent on every access and writes forward to the parent with paths rewritten. **Both sides see the same physical state.**
@@ -340,6 +364,7 @@ See **[docs/angular.md](docs/angular.md)** for the full API, typed generics, cha
 | `.getValue(path)` | Strict single-match read from draft. Throws `Error` on multi-match; throws `undefined` on no-match. |
 | `.getValueBase(path)` | Same as `getValue` but reads from base. |
 | `.diff(path?, options?)` | `DiffOp[]` — structural diff between base and draft. |
+| `.items(path, options?)` | `ItemEntry[]` — merged identity view of a keyed array. |
 | `.undo()` / `.redo()` | Reverse / replay the last operation. |
 | `.accept()` | Promote draft into base. Reversible. |
 | `.decline()` | Reset draft from base. Reversible. |
@@ -359,6 +384,7 @@ See **[docs/angular.md](docs/angular.md)** for the full API, typed generics, cha
 | `.get(path)` / `.getBase(path)` | Reads draft / base in child frame, forwarded to parent. |
 | `.getValue(path)` / `.getValueBase(path)` | Strict single-match reads from draft / base. |
 | `.diff(path?, options?)` | Ops touching this subtree. Paths relative to child `$`; each op also carries `absolutePath`. |
+| `.items(path, options?)` | Merged identity view of a keyed array under this subtree. |
 | `.accept()` | Commits this subtree into parent's base. |
 | `.decline()` | Resets this subtree in parent's draft from parent's base. |
 | `.undo()` / `.redo()` | Delegate to parent — one shared history. |
@@ -380,10 +406,21 @@ type DiffOp =
 - `identity` — present on ops produced by identity-keyed array diffing. The matched key value (or the item itself for `$self`).
 - `oldValue` — present on `replace` ops; the value that was there before.
 
+### `ItemEntry`
+
+```ts
+type ItemEntry<V = JsonValue> = {
+  identity: JsonValue;                    // the x-key value (the item itself for $self)
+  op?: 'add' | 'remove' | 'replace';      // absent = unchanged
+  value: V;                               // draft item — base item when op is 'remove'
+  changes?: DiffOp[];                     // only on 'replace'; paths relative to the item
+}
+```
+
 ### Entrypoints
 
 ```
-@maxjay/patchwork          Engine, NodeEngine, DiffOp, OpType
+@maxjay/patchwork          Engine, NodeEngine, DiffOp, ItemEntry, OpType
 @maxjay/patchwork/tools    createEngineTools, Tool, EngineLike
 @maxjay/patchwork/chat     runAgentLoop, AgentMessage, ModelAdapter, NativeAdapter, PromptAdapter, toAgentTools
 @maxjay/patchwork/mcp      toMcpTools, handleMcpCall

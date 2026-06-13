@@ -1496,3 +1496,203 @@ describe('Engine — keyed diff identity paths', () => {
 		]);
 	});
 });
+
+describe('Engine.items', () => {
+	const usersSchema = {
+		type: 'object',
+		properties: {
+			users: { type: 'array', 'x-key': 'email', items: { type: 'object' } },
+		},
+	};
+
+	const makeUsers = () =>
+		new Engine<any>(
+			{
+				users: [
+					{ email: 'a@x.com', region: 'us' },
+					{ email: 'b@x.com', region: 'us' },
+					{ email: 'c@x.com', region: 'us' },
+				],
+			},
+			{ schema: usersSchema },
+		);
+
+	it('labels add, remove, replace, and unchanged across base and draft', () => {
+		const e = makeUsers();
+		e.delete("$.users[?@.email == 'b@x.com']");
+		e.replace("$.users[?@.email == 'c@x.com'].region", 'eu');
+		e.add('$.users[-]', { email: 'd@x.com', region: 'ap' });
+
+		expect(e.items('$.users')).toEqual([
+			{ identity: 'a@x.com', value: { email: 'a@x.com', region: 'us' } },
+			{
+				identity: 'c@x.com',
+				op: 'replace',
+				value: { email: 'c@x.com', region: 'eu' },
+				changes: [{ op: 'replace', path: "$['region']", oldValue: 'us', value: 'eu' }],
+			},
+			{ identity: 'd@x.com', op: 'add', value: { email: 'd@x.com', region: 'ap' } },
+			{ identity: 'b@x.com', op: 'remove', value: { email: 'b@x.com', region: 'us' } },
+		]);
+	});
+
+	it('returns only unchanged entries when nothing was edited', () => {
+		const e = makeUsers();
+		const entries = e.items('$.users');
+		expect(entries).toHaveLength(3);
+		expect(entries.every(entry => entry.op === undefined)).toBe(true);
+	});
+
+	it('changes paths are item-relative, including nested structure', () => {
+		const e = new Engine<any>(
+			{ users: [{ email: 'a@x.com', prefs: { theme: 'dark' } }] },
+			{ schema: usersSchema },
+		);
+		e.replace('$.users[0].prefs.theme', 'light');
+		const [entry] = e.items('$.users');
+		expect(entry.op).toBe('replace');
+		expect(entry.changes).toEqual([
+			{ op: 'replace', path: "$['prefs']['theme']", oldValue: 'dark', value: 'light' },
+		]);
+	});
+
+	it('field add and remove inside an item both land in changes', () => {
+		const e = makeUsers();
+		e.delete("$.users[?@.email == 'a@x.com'].region");
+		// literal path — filter paths are queries and cannot create new keys
+		e.add('$.users[0].plan', 'pro');
+		const entry = e.items('$.users').find(x => x.identity === 'a@x.com')!;
+		expect(entry.op).toBe('replace');
+		expect(entry.changes).toEqual([
+			{ op: 'remove', path: "$['region']", value: 'us' },
+			{ op: 'add', path: "$['plan']", value: 'pro' },
+		]);
+	});
+
+	it('changes use identity filters for nested keyed arrays', () => {
+		const schema = {
+			type: 'object',
+			properties: {
+				users: {
+					type: 'array',
+					'x-key': 'email',
+					items: {
+						type: 'object',
+						properties: {
+							tags: { type: 'array', 'x-key': '$self', items: { type: 'string' } },
+						},
+					},
+				},
+			},
+		};
+		const e = new Engine<any>({ users: [{ email: 'a@x.com', tags: ['x', 'y'] }] }, { schema });
+		e.delete('$.users[0].tags[0]');
+		const [entry] = e.items('$.users');
+		expect(entry.op).toBe('replace');
+		expect(entry.changes).toEqual([
+			{ op: 'remove', path: '$[\'tags\'][?@ == "x"]', value: 'x', identity: 'x' },
+		]);
+	});
+
+	it('works with an inline key and no schema', () => {
+		const e = new Engine<any>({ users: [{ id: 1, n: 'a' }, { id: 2, n: 'b' }] });
+		e.delete('$.users[0]');
+		expect(e.items('$.users', { key: 'id' })).toEqual([
+			{ identity: 2, value: { id: 2, n: 'b' } },
+			{ identity: 1, op: 'remove', value: { id: 1, n: 'a' } },
+		]);
+	});
+
+	it('throws when no identity key is available', () => {
+		const e = new Engine<any>({ users: [{ id: 1 }] });
+		expect(() => e.items('$.users')).toThrow(/no identity key/);
+	});
+
+	it('throws when the path does not resolve to exactly one node', () => {
+		const e = makeUsers();
+		expect(() => e.items('$.users[*]')).toThrow(/exactly one array, got 3/);
+		expect(() => e.items('$.missing')).toThrow(/exactly one array, got 0/);
+	});
+
+	it('throws when the path resolves to a non-array', () => {
+		const e = new Engine<any>({ users: { id: 1 } });
+		expect(() => e.items('$.users', { key: 'id' })).toThrow(/not an array/);
+	});
+
+	it('throws on duplicate identities, same contract as diff', () => {
+		const e = new Engine<any>({ users: [{ email: 'a@x.com' }, { email: 'a@x.com' }] }, { schema: usersSchema });
+		expect(() => e.items('$.users')).toThrow(/duplicate identity/);
+	});
+
+	it('treats an array existing on only one side as all-add or all-remove', () => {
+		const e = new Engine<any>({}, { schema: usersSchema });
+		e.add('$.users', [{ email: 'a@x.com', region: 'us' }]);
+		expect(e.items('$.users')).toEqual([
+			{ identity: 'a@x.com', op: 'add', value: { email: 'a@x.com', region: 'us' } },
+		]);
+	});
+
+	it('reflects undo — inverse ops move entries back to unchanged', () => {
+		const e = makeUsers();
+		e.replace("$.users[?@.email == 'c@x.com'].region", 'eu');
+		expect(e.items('$.users').find(x => x.identity === 'c@x.com')!.op).toBe('replace');
+		e.undo();
+		expect(e.items('$.users').find(x => x.identity === 'c@x.com')!.op).toBeUndefined();
+	});
+
+	it('supports $self set semantics: add/remove only, duplicates collapse', () => {
+		const schema = {
+			type: 'object',
+			properties: {
+				perms: { type: 'array', 'x-key': '$self', items: { type: 'string' } },
+			},
+		};
+		const e = new Engine<any>({ perms: ['read', 'write'] }, { schema });
+		e.delete('$.perms[1]');
+		e.add('$.perms[-]', 'admin');
+		e.add('$.perms[-]', 'admin');
+		expect(e.items('$.perms')).toEqual([
+			{ identity: 'read', value: 'read' },
+			{ identity: 'admin', op: 'add', value: 'admin' },
+			{ identity: 'write', op: 'remove', value: 'write' },
+		]);
+	});
+
+	it('$self throws on object items', () => {
+		const e = new Engine<any>({ perms: [{ a: 1 }] });
+		expect(() => e.items('$.perms', { key: '$self' })).toThrow(/requires primitive items/);
+	});
+
+	it('entry identity addresses the item in every engine op', () => {
+		const e = makeUsers();
+		e.delete("$.users[?@.email == 'b@x.com']");
+		const ghost = e.items('$.users').find(x => x.op === 'remove')!;
+		// acting on an entry = addressing by identity filter
+		expect(e.getBase(`$.users[?@.email == '${ghost.identity}']`)).toHaveLength(1);
+	});
+});
+
+describe('NodeEngine.items', () => {
+	it('forwards with the lens prefix joined into the array path', () => {
+		const schema = {
+			type: 'object',
+			properties: {
+				team: {
+					type: 'object',
+					properties: {
+						users: { type: 'array', 'x-key': 'email', items: { type: 'object' } },
+					},
+				},
+			},
+		};
+		const e = new Engine<any>(
+			{ team: { users: [{ email: 'a@x.com', region: 'us' }] } },
+			{ schema },
+		);
+		const team = e.getNodeEngine('$.team');
+		team.delete('$.users[0]');
+		expect(team.items('$.users')).toEqual([
+			{ identity: 'a@x.com', op: 'remove', value: { email: 'a@x.com', region: 'us' } },
+		]);
+	});
+});
