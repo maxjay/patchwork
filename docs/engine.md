@@ -194,7 +194,7 @@ type DiffOp =
   | { op: 'revert';        path: string; absolutePath?: string }
 ```
 
-- **`path`** — normalized JSONPath (`$['key'][0]`). For `remove` ops from identity-keyed array diffs, this uses the *base* index (where the element was). For `add` ops and for changes within surviving elements, this uses the *draft* index (where the element is now).
+- **`path`** — normalized JSONPath (`$['key'][0]`). Inside identity-keyed arrays, a *canonical identity path*: the element segment is an RFC 9535 filter on the key — `$['users'][?@['email'] == "b@x.com"]` — instead of an index. An index cannot address keyed elements coherently (a removed element only has a position in base, an added one only in draft); an identity path names the same element against either document and can be fed back into `replace` / `delete` / `get` / `revert`. Identity paths are valid RFC 9535 queries the engine evaluates natively, though formally not RFC "Normalized Paths" (the RFC's output grammar cannot express identity).
 - **`absolutePath`** — only present on ops from `NodeEngine.diff()`. The full document path while `path` is relative to the child's `$`.
 - **`identity`** — present on `add` / `remove` ops produced by identity-keyed diffing. The matched key value (or the primitive item itself for `$self`). Not set on field-level `replace` ops or on index-zip ops. This is what lets consumers identify *which element* was added or removed without needing to know the schema's key field.
 - **`oldValue`** — present on `replace` ops. The value that was at the path in base before the change.
@@ -219,7 +219,9 @@ engine.diff('$.server');     // ops under $.server only
 engine.diff('$.items[*]');   // ops under any array element
 ```
 
-The path is resolved against both `base` and `draft` so that ops for deleted nodes (not in draft) and added nodes (not in base) are both included. The filter then keeps only ops whose path falls under one of the resolved prefixes.
+The path is resolved against both `base` and `draft` so that ops for deleted nodes (not in draft) and added nodes (not in base) are both included. Each resolved prefix is canonicalized — positions inside keyed arrays become identity filters, read off the element on the side it resolved from — and the filter keeps only ops whose (canonical) path falls under one of the prefixes.
+
+Scoping by identity filter (`$.users[?@.email == 'c@x.com']`) is precise. Scoping by *index* into a keyed array (`$.users[1]`) matches both the base and draft occupants of that slot — index scoping is inherently ambiguous there.
 
 ---
 
@@ -266,17 +268,19 @@ const engine = new Engine(data, {
 });
 ```
 
-After `extractKeyMap` walks the schema, the engine knows that the array at `$['items']` uses `'id'` as its key. During `diffNode`, when it encounters an array at a path that matches, it dispatches to `diffArrayByKey`.
+After `extractKeyMap` walks the schema, the engine knows that the array at `$['items']` uses `'id'` as its key. During `diffNode`, when it encounters an array at a location that matches, it dispatches to `diffArrayByKey`.
 
-`diffArrayByKey` builds two `Map<keyValue, {item, index}>` — one for each side — then:
+`diffArrayByKey` builds two `Map<keyValue, item>` — one for each side — then:
 
-1. Any key in base but not draft → `remove` op (with `identity: keyValue`).
-2. Any key in draft but not base → `add` op (with `identity: keyValue`).
-3. Any key in both → recurse into the pair with `diffNode`, using the draft index for the path.
+1. Any key in base but not draft → `remove` op at the element's identity path (with `identity: keyValue`).
+2. Any key in draft but not base → `add` op at the element's identity path (with `identity: keyValue`).
+3. Any key in both → recurse into the pair with `diffNode`, with the identity segment as the path prefix.
 
-This means changes *within* a surviving element (a field rename, a nested value update) are represented as granular field-level ops at the correct path, not as a wholesale remove+add of the element.
+This means changes *within* a surviving element (a field rename, a nested value update) are represented as granular field-level ops — `$['items'][?@['id'] == 7]['v']` — not as a wholesale remove+add of the element.
 
-**Nested arrays** — `x-key` composes. If an array item itself contains an array with its own key, declare `x-key` on that inner schema too. The engine resolves the key at each depth using path-pattern matching: the concrete path `$['groups'][0]['members']` is normalized to `$['groups'][*]['members']` and looked up in the key map. This means a single schema registration covers all indices.
+**Strictness** — `x-key` is a contract: every item is an object carrying a primitive value under the key, unique within the array. `diff()` throws on duplicate or missing identities. (Before this, violations collapsed silently in the maps and produced a quietly wrong diff.)
+
+**Nested arrays** — `x-key` composes. If an array item itself contains an array with its own key, declare `x-key` on that inner schema too. The walk carries the location in *pattern form* (every array hop is `[*]`, e.g. `$['groups'][*]['members']`) and looks that up in the key map, so a single schema registration covers all elements. The pattern is built from segments, never by rewriting path strings.
 
 **Per-call override** — no schema needed if you use the `key` option directly:
 
@@ -300,23 +304,20 @@ schema: {
 }
 ```
 
-The algorithm is pure set difference using JavaScript's native `Map` (which provides value-equality for primitives):
+The algorithm is pure set difference using JavaScript's native `Set` (which provides value-equality for primitives):
 
-- Items in base but not draft → `remove` ops (with `identity: item`).
-- Items in draft but not base → `add` ops (with `identity: item`).
+- Items in base but not draft → `remove` ops at `[?@ == item]` (with `identity: item`).
+- Items in draft but not base → `add` ops at `[?@ == item]` (with `identity: item`).
 - Reordering is invisible — this is set semantics, and sets have no order.
-- Duplicates collapse — if both sides contain duplicate `'urgent'`, the map deduplicates them and the net diff is empty.
+- Duplicates collapse — if both sides contain duplicate `'urgent'`, the set deduplicates them and the net diff is empty. (Unlike keyed arrays, duplicates are *not* an error here: `$self` declares set semantics, and collapse is what sets do.)
 
-**Restricted to primitive items.** JavaScript's `Map` uses reference equality for objects, so `{a:1}` and `{a:1}` would be treated as different identities. If you attempt `$self` on an array containing objects or nested arrays, `diff()` throws with a message pointing to `x-key: '<field>'`. Extending `$self` to structural identity for objects (via canonical-JSON normalization or deep-equal scan) is tracked separately.
+**Restricted to primitive items.** JavaScript's `Set` uses reference equality for objects, so `{a:1}` and `{a:1}` would be treated as different identities. If you attempt `$self` on an array containing objects or nested arrays, `diff()` throws with a message pointing to `x-key: '<field>'`. Extending `$self` to structural identity for objects (via canonical-JSON normalization or deep-equal scan) is tracked separately.
 
-### The `identity` field and path ambiguity
+### Identity paths
 
-When identity-keyed diffing is active:
-- `remove` ops use the element's **base** index (where it was).
-- `add` ops use the element's **draft** index (where it is).
-- Recursive change ops within surviving elements use the element's **draft** index.
+When identity-keyed diffing is active, no op carries an index into the keyed array — every element segment is an identity filter. Two ops can never claim the same path while meaning different elements, paths never go stale when the array is spliced, and any emitted path can be fed back into `replace` / `delete` / `get` / `revert` to address exactly the element it described. The `identity` field carries the matched key value as plain data so consumers don't parse it out of the path.
 
-This means a `remove` and a recursive change can claim the same `path` in the same diff — if you delete element at base[1] and the element now at draft[1] has an internal change, both ops show `[1]`. The `identity` field on the `remove` op is what lets a consumer distinguish them unambiguously: the remove carries `identity: keyValue`, naming the deleted element directly, while the change op has no `identity` (it's a field-level change, not an element-level one).
+(Index paths fundamentally cannot work here: a removed element only has a position in base, an added one only in draft, so any index emission mixes two coordinate systems in one op list — earlier versions did exactly that.)
 
 ---
 

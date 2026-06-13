@@ -70,7 +70,7 @@ engine.base;   // { server: { host: 'localhost', port: 8080 }, debug: false }
 | `.delete(path)` | Remove at path. Splices arrays in place. |
 | `.move(from, to)` | Move a value. Source must resolve to exactly one node. |
 | `.copy(from, to)` | Copy a value. Source must resolve to exactly one node. |
-| `.revert(path)` | Reset draft at path back to whatever `base` has there. |
+| `.revert(path)` | Reset draft at path back to whatever `base` has there. Identity-aware inside keyed arrays: a removed element is re-inserted, an added one removed, a modified one restored in place. |
 
 ### 3. See what changed
 
@@ -204,13 +204,17 @@ const engine = new Engine(
 engine.delete('$.regions[0]');
 
 engine.diff();
-// [ { op: 'remove', path: "$['regions'][0]", value: { id: 'us-east', ... }, identity: 'us-east' } ]
+// [ { op: 'remove', path: `$['regions'][?@['id'] == "us-east"]`, value: { id: 'us-east', ... }, identity: 'us-east' } ]
 // one op — not a cascade
 ```
 
-`x-key` nests: arrays inside arrays can each declare their own key. The engine resolves the right field at each depth automatically via path-pattern matching.
+Inside a keyed array, ops carry **identity paths**: the element segment is an RFC 9535 filter on the key instead of an index. Indexes can't address keyed elements coherently — a removed element only has a position in `base`, an added one only in `draft` — but an identity path means the same element against either document, never goes stale when the array is spliced, and feeds straight back into `replace` / `delete` / `get` like any other path.
 
-The `identity` field on `DiffOp` carries the matched key value directly, so consumers don't need schema knowledge to identify what was added or removed.
+`x-key` nests: arrays inside arrays can each declare their own key, and the filters compose — `$['users'][?@['email'] == "a@x.com"]['tags'][?@ == "x"]`.
+
+The `identity` field on `DiffOp` carries the matched key value directly, so consumers don't need to parse it out of the path.
+
+`x-key` declares a contract: every item carries a primitive value under the key, unique within the array. `diff()` throws if the data breaks it (duplicate or missing identities) rather than producing a quietly wrong diff.
 
 For a one-off without a schema:
 
@@ -238,10 +242,48 @@ const engine = new Engine(
 engine.delete('$.permissions[1]');
 
 engine.diff();
-// [ { op: 'remove', path: "$['permissions'][1]", value: 'write', identity: 'write' } ]
+// [ { op: 'remove', path: `$['permissions'][?@ == "write"]`, value: 'write', identity: 'write' } ]
 ```
 
 Restricted to primitive items. For sets of objects, add a stable ID field and use `x-key: '<field>'`.
+
+### Reading a keyed array for UI: `items()`
+
+`diff()` answers "what changed" as a flat op list. A list UI needs a different read model: *every* element — including unchanged ones and removed ghosts — labelled with its state. `items()` returns the union of base and draft elements matched by identity:
+
+```ts
+engine.items('$.users');
+// [
+//   { identity: 'a@x.com', path: `$['users'][?@['email'] == "a@x.com"]`,
+//     value: { email: 'a@x.com', region: 'us' } },
+//   { identity: 'c@x.com', path: `$['users'][?@['email'] == "c@x.com"]`, op: 'replace',
+//     value: { email: 'c@x.com', region: 'eu' },
+//     changes: [ { op: 'replace', path: "$['region']", oldValue: 'us', value: 'eu' } ] },
+//   { identity: 'd@x.com', path: `$['users'][?@['email'] == "d@x.com"]`, op: 'add',
+//     value: { email: 'd@x.com', region: 'ap' } },
+//   { identity: 'b@x.com', path: `$['users'][?@['email'] == "b@x.com"]`, op: 'remove',
+//     value: { email: 'b@x.com', region: 'us' } },
+// ]
+```
+
+- No `op` — unchanged.
+- `add` — present in draft only.
+- `remove` — present in base only; `value` carries the base item, ready to render as a ghost row.
+- `replace` — present in both with differences; `changes` carries the field-level ops with paths **relative to the item** (identity filters for any nested keyed arrays).
+
+Two handles per entry: `identity` is the data handle (list tracking, display), `path` is the action handle — an engine-built canonical identity path that feeds straight into any op, with quoting/escaping handled:
+
+```ts
+engine.delete(row.path);                       // remove this row
+engine.replace(`${row.path}['region']`, 'eu'); // edit a field on this row
+engine.getBase(row.path);                      // read a ghost's base content
+engine.revert(row.path);                       // per-row undo: restore a ghost,
+                                               // drop an add, reset a modification
+```
+
+Never an index, so it can't go stale when the array is spliced. Draft items come first in draft order, then removed items in base order; reorder freely in the UI.
+
+The identity key comes from the schema's `x-key`, or inline: `engine.items('$.users', { key: 'email' })`. `x-key: '$self'` arrays work too — set semantics, so entries are only ever unchanged / `add` / `remove`.
 
 ## Scoped lenses
 
@@ -330,12 +372,13 @@ See **[docs/angular.md](docs/angular.md)** for the full API, typed generics, cha
 | `.delete(path)` | Remove at path. |
 | `.move(from, to)` | Move. Source must resolve to exactly one node. |
 | `.copy(from, to)` | Copy. Source must resolve to exactly one node. |
-| `.revert(path)` | Reset draft at path to base. |
+| `.revert(path)` | Reset draft at path to base. Identity-aware inside keyed arrays. |
 | `.get(path)` | `Array<{ path, value }>` — every match in draft with normalized paths. |
 | `.getBase(path)` | Same as `get` but reads from base. |
 | `.getValue(path)` | Strict single-match read from draft. Throws `Error` on multi-match; throws `undefined` on no-match. |
 | `.getValueBase(path)` | Same as `getValue` but reads from base. |
 | `.diff(path?, options?)` | `DiffOp[]` — structural diff between base and draft. |
+| `.items(path, options?)` | `ItemEntry[]` — merged identity view of a keyed array. |
 | `.undo()` / `.redo()` | Reverse / replay the last operation. |
 | `.accept()` | Promote draft into base. Reversible. |
 | `.decline()` | Reset draft from base. Reversible. |
@@ -355,6 +398,7 @@ See **[docs/angular.md](docs/angular.md)** for the full API, typed generics, cha
 | `.get(path)` / `.getBase(path)` | Reads draft / base in child frame, forwarded to parent. |
 | `.getValue(path)` / `.getValueBase(path)` | Strict single-match reads from draft / base. |
 | `.diff(path?, options?)` | Ops touching this subtree. Paths relative to child `$`; each op also carries `absolutePath`. |
+| `.items(path, options?)` | Merged identity view of a keyed array under this subtree. |
 | `.accept()` | Commits this subtree into parent's base. |
 | `.decline()` | Resets this subtree in parent's draft from parent's base. |
 | `.undo()` / `.redo()` | Delegate to parent — one shared history. |
@@ -371,15 +415,27 @@ type DiffOp =
   | { op: 'revert';        path: string; absolutePath?: string }
 ```
 
-- `path` — normalized JSONPath (`$['key'][0]`).
+- `path` — normalized JSONPath (`$['key'][0]`). Inside keyed arrays, a *canonical identity path*: the element segment is a filter on the key (`$['users'][?@['email'] == "b@x.com"]`) — a valid RFC 9535 query that resolves against base or draft and feeds back into any engine op. (Formally not an RFC "Normalized Path"; the RFC's output grammar cannot express identity.)
 - `absolutePath` — present on ops from `NodeEngine.diff()`. Contains the full document path while `path` is relative to the child's `$`.
-- `identity` — present on `add` / `remove` ops produced by identity-keyed array diffing. The matched key value (or the item itself for `$self`). Not present on field-level `replace` ops or index-zip ops.
+- `identity` — present on ops produced by identity-keyed array diffing. The matched key value (or the item itself for `$self`).
 - `oldValue` — present on `replace` ops; the value that was there before.
+
+### `ItemEntry`
+
+```ts
+type ItemEntry<V = JsonValue> = {
+  identity: JsonValue;                    // data handle: the x-key value (the item itself for $self)
+  path: string;                           // action handle: canonical identity path, feeds into any op
+  op?: 'add' | 'remove' | 'replace';      // absent = unchanged
+  value: V;                               // draft item — base item when op is 'remove'
+  changes?: DiffOp[];                     // only on 'replace'; paths relative to the item
+}
+```
 
 ### Entrypoints
 
 ```
-@maxjay/patchwork          Engine, NodeEngine, DiffOp, OpType
+@maxjay/patchwork          Engine, NodeEngine, DiffOp, ItemEntry, OpType
 @maxjay/patchwork/tools    createEngineTools, Tool, EngineLike
 @maxjay/patchwork/chat     runAgentLoop, AgentMessage, ModelAdapter, NativeAdapter, PromptAdapter, toAgentTools
 @maxjay/patchwork/mcp      toMcpTools, handleMcpCall
