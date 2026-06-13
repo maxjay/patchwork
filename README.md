@@ -70,7 +70,7 @@ engine.base;   // { server: { host: 'localhost', port: 8080 }, debug: false }
 | `.delete(path)` | Remove at path. Splices arrays in place. |
 | `.move(from, to)` | Move a value. Source must resolve to exactly one node. |
 | `.copy(from, to)` | Copy a value. Source must resolve to exactly one node. |
-| `.revert(path)` | Reset draft at path back to whatever `base` has there. |
+| `.revert(path)` | Reset draft at path back to whatever `base` has there. Identity-aware inside keyed arrays: a removed element is re-inserted, an added one removed, a modified one restored in place. |
 
 ### 3. See what changed
 
@@ -277,6 +277,8 @@ Two handles per entry: `identity` is the data handle (list tracking, display), `
 engine.delete(row.path);                       // remove this row
 engine.replace(`${row.path}['region']`, 'eu'); // edit a field on this row
 engine.getBase(row.path);                      // read a ghost's base content
+engine.revert(row.path);                       // per-row undo: restore a ghost,
+                                               // drop an add, reset a modification
 ```
 
 Never an index, so it can't go stale when the array is spliced. Draft items come first in draft order, then removed items in base order; reorder freely in the UI.
@@ -370,7 +372,7 @@ See **[docs/angular.md](docs/angular.md)** for the full API, typed generics, cha
 | `.delete(path)` | Remove at path. |
 | `.move(from, to)` | Move. Source must resolve to exactly one node. |
 | `.copy(from, to)` | Copy. Source must resolve to exactly one node. |
-| `.revert(path)` | Reset draft at path to base. |
+| `.revert(path)` | Reset draft at path to base. Identity-aware inside keyed arrays. |
 | `.get(path)` | `Array<{ path, value }>` — every match in draft with normalized paths. |
 | `.getBase(path)` | Same as `get` but reads from base. |
 | `.getValue(path)` | Strict single-match read from draft. Throws `Error` on multi-match; throws `undefined` on no-match. |

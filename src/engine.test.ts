@@ -1712,3 +1712,132 @@ describe('NodeEngine.items', () => {
 		expect(team.getBase(team.items('$.users')[0].path)).toHaveLength(1);
 	});
 });
+
+describe('Engine.revert — keyed arrays', () => {
+	const usersSchema = {
+		type: 'object',
+		properties: {
+			users: { type: 'array', 'x-key': 'email', items: { type: 'object' } },
+		},
+	};
+
+	const makeUsers = () =>
+		new Engine<any>(
+			{
+				users: [
+					{ email: 'a@x.com', region: 'us' },
+					{ email: 'b@x.com', region: 'us' },
+					{ email: 'c@x.com', region: 'us' },
+				],
+			},
+			{ schema: usersSchema },
+		);
+
+	it('reverting a removed element re-inserts it without touching its neighbors', () => {
+		const e = makeUsers();
+		e.delete("$.users[?@.email == 'b@x.com']");
+		e.replace("$.users[?@.email == 'c@x.com'].region", 'eu');
+
+		e.revert("$.users[?@.email == 'b@x.com']");
+		expect(e.draft.users.map((u: any) => u.email)).toEqual(['a@x.com', 'b@x.com', 'c@x.com']);
+		expect(e.draft.users[2].region).toBe('eu'); // c's pending edit survives
+	});
+
+	it('reverting an added element removes it', () => {
+		const e = makeUsers();
+		e.add('$.users[-]', { email: 'd@x.com', region: 'ap' });
+		e.revert("$.users[?@.email == 'd@x.com']");
+		expect(e.draft.users.map((u: any) => u.email)).toEqual(['a@x.com', 'b@x.com', 'c@x.com']);
+	});
+
+	it('reverting a modified element restores the base item at its current position', () => {
+		const e = makeUsers();
+		e.delete('$.users[0]'); // shift everyone — c now at draft[1]
+		e.replace("$.users[?@.email == 'c@x.com'].region", 'eu');
+		e.revert("$.users[?@.email == 'c@x.com']");
+		expect(e.draft.users).toEqual([
+			{ email: 'b@x.com', region: 'us' },
+			{ email: 'c@x.com', region: 'us' },
+		]);
+	});
+
+	it('reverting a single field under a keyed element restores only that field', () => {
+		const e = makeUsers();
+		e.replace("$.users[?@.email == 'c@x.com'].region", 'eu');
+		e.replace("$.users[?@.email == 'a@x.com'].region", 'eu');
+		e.revert("$.users[?@.email == 'c@x.com'].region");
+		expect(e.draft.users.find((u: any) => u.email === 'c@x.com').region).toBe('us');
+		expect(e.draft.users.find((u: any) => u.email === 'a@x.com').region).toBe('eu');
+	});
+
+	it('reverting a field deleted in draft recreates it on the surviving element', () => {
+		const e = makeUsers();
+		e.delete("$.users[?@.email == 'b@x.com'].region");
+		e.revert("$.users[?@.email == 'b@x.com'].region");
+		expect(e.draft.users.find((u: any) => u.email === 'b@x.com').region).toBe('us');
+	});
+
+	it('items() row paths drive per-row undo for all three op states', () => {
+		const e = makeUsers();
+		e.delete("$.users[?@.email == 'b@x.com']");
+		e.replace("$.users[?@.email == 'c@x.com'].region", 'eu');
+		e.add('$.users[-]', { email: 'd@x.com', region: 'ap' });
+
+		for (const row of e.items('$.users').filter(r => r.op !== undefined)) {
+			e.revert(row.path);
+		}
+		expect(e.draft).toEqual(e.base);
+		expect(e.items('$.users').every(r => r.op === undefined)).toBe(true);
+	});
+
+	it('undo restores the exact pre-revert draft; redo replays', () => {
+		const e = makeUsers();
+		e.delete("$.users[?@.email == 'b@x.com']");
+		e.replace("$.users[?@.email == 'c@x.com'].region", 'eu');
+		const before = structuredClone(e.draft);
+
+		e.revert("$.users[?@.email == 'b@x.com']");
+		e.undo();
+		expect(e.draft).toEqual(before);
+		e.redo();
+		expect(e.draft.users.map((u: any) => u.email)).toEqual(['a@x.com', 'b@x.com', 'c@x.com']);
+		expect(e.draft.users[2].region).toBe('eu');
+	});
+
+	it('reverting two removed elements in one call re-inserts both in base order', () => {
+		const e = makeUsers();
+		e.delete("$.users[?@.email == 'a@x.com']");
+		e.delete("$.users[?@.email == 'b@x.com']");
+		e.revert('$.users[*]');
+		expect(e.draft.users.map((u: any) => u.email)).toEqual(['a@x.com', 'b@x.com', 'c@x.com']);
+	});
+
+	it('$self: reverting a deleted member re-inserts it after its surviving neighbor', () => {
+		const schema = {
+			type: 'object',
+			properties: {
+				perms: { type: 'array', 'x-key': '$self', items: { type: 'string' } },
+			},
+		};
+		const e = new Engine<any>({ perms: ['read', 'write', 'admin'] }, { schema });
+		e.delete('$.perms[1]');
+		e.revert('$.perms[?@ == "write"]');
+		expect(e.draft.perms).toEqual(['read', 'write', 'admin']);
+	});
+
+	it('whole-array revert on a keyed array still resets it wholesale', () => {
+		const e = makeUsers();
+		e.delete('$.users[0]');
+		e.replace('$.users[0].region', 'eu');
+		e.revert('$.users');
+		expect(e.draft).toEqual(e.base);
+	});
+
+	it('reverting the ghost of an element whose neighbors all died inserts at the front', () => {
+		const e = makeUsers();
+		e.delete('$.users[0]');
+		e.delete('$.users[0]'); // a and b both gone; draft = [c]
+		e.revert("$.users[?@.email == 'b@x.com']");
+		expect(e.draft.users.map((u: any) => u.email)).toEqual(['b@x.com', 'c@x.com']);
+	});
+});
