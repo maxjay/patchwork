@@ -105,7 +105,7 @@ describe('PatchworkStore reactive reads', () => {
 		const itemsDiff = store.diff('$.items', { key: 'id' });
 		store.delete('$.items[0]');
 		expect(itemsDiff()).toEqual([
-			{ op: 'remove', path: "$['items'][0]", value: { id: 1 }, identity: 1 },
+			{ op: 'remove', path: "$['items'][?@['id'] == 1]", value: { id: 1 }, identity: 1 },
 		]);
 	});
 

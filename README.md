@@ -204,13 +204,17 @@ const engine = new Engine(
 engine.delete('$.regions[0]');
 
 engine.diff();
-// [ { op: 'remove', path: "$['regions'][0]", value: { id: 'us-east', ... }, identity: 'us-east' } ]
+// [ { op: 'remove', path: `$['regions'][?@['id'] == "us-east"]`, value: { id: 'us-east', ... }, identity: 'us-east' } ]
 // one op — not a cascade
 ```
 
-`x-key` nests: arrays inside arrays can each declare their own key. The engine resolves the right field at each depth automatically via path-pattern matching.
+Inside a keyed array, ops carry **identity paths**: the element segment is an RFC 9535 filter on the key instead of an index. Indexes can't address keyed elements coherently — a removed element only has a position in `base`, an added one only in `draft` — but an identity path means the same element against either document, never goes stale when the array is spliced, and feeds straight back into `replace` / `delete` / `get` like any other path.
 
-The `identity` field on `DiffOp` carries the matched key value directly, so consumers don't need schema knowledge to identify what was added or removed.
+`x-key` nests: arrays inside arrays can each declare their own key, and the filters compose — `$['users'][?@['email'] == "a@x.com"]['tags'][?@ == "x"]`.
+
+The `identity` field on `DiffOp` carries the matched key value directly, so consumers don't need to parse it out of the path.
+
+`x-key` declares a contract: every item carries a primitive value under the key, unique within the array. `diff()` throws if the data breaks it (duplicate or missing identities) rather than producing a quietly wrong diff.
 
 For a one-off without a schema:
 
@@ -238,7 +242,7 @@ const engine = new Engine(
 engine.delete('$.permissions[1]');
 
 engine.diff();
-// [ { op: 'remove', path: "$['permissions'][1]", value: 'write', identity: 'write' } ]
+// [ { op: 'remove', path: `$['permissions'][?@ == "write"]`, value: 'write', identity: 'write' } ]
 ```
 
 Restricted to primitive items. For sets of objects, add a stable ID field and use `x-key: '<field>'`.
@@ -371,9 +375,9 @@ type DiffOp =
   | { op: 'revert';        path: string; absolutePath?: string }
 ```
 
-- `path` — normalized JSONPath (`$['key'][0]`).
+- `path` — normalized JSONPath (`$['key'][0]`). Inside keyed arrays, a *canonical identity path*: the element segment is a filter on the key (`$['users'][?@['email'] == "b@x.com"]`) — a valid RFC 9535 query that resolves against base or draft and feeds back into any engine op. (Formally not an RFC "Normalized Path"; the RFC's output grammar cannot express identity.)
 - `absolutePath` — present on ops from `NodeEngine.diff()`. Contains the full document path while `path` is relative to the child's `$`.
-- `identity` — present on `add` / `remove` ops produced by identity-keyed array diffing. The matched key value (or the item itself for `$self`). Not present on field-level `replace` ops or index-zip ops.
+- `identity` — present on ops produced by identity-keyed array diffing. The matched key value (or the item itself for `$self`).
 - `oldValue` — present on `replace` ops; the value that was there before.
 
 ### Entrypoints

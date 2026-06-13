@@ -1156,7 +1156,7 @@ describe('Engine — identity-keyed array diff', () => {
 		const e = new Engine({ items: [{ id: 1, v: 'a' }, { id: 2, v: 'b' }, { id: 3, v: 'c' }] }, { schema });
 		e.delete('$.items[0]');
 		expect(e.diff()).toEqual([
-			{ op: 'remove', path: "$['items'][0]", value: { id: 1, v: 'a' }, identity: 1 },
+			{ op: 'remove', path: "$['items'][?@['id'] == 1]", value: { id: 1, v: 'a' }, identity: 1 },
 		]);
 	});
 
@@ -1164,7 +1164,7 @@ describe('Engine — identity-keyed array diff', () => {
 		const e = new Engine<any>({ items: [{ id: 1 }] }, { schema });
 		e.add('$.items[1]', { id: 2, v: 'new' });
 		expect(e.diff()).toEqual([
-			{ op: 'add', path: "$['items'][1]", value: { id: 2, v: 'new' }, identity: 2 },
+			{ op: 'add', path: "$['items'][?@['id'] == 2]", value: { id: 2, v: 'new' }, identity: 2 },
 		]);
 	});
 
@@ -1172,7 +1172,7 @@ describe('Engine — identity-keyed array diff', () => {
 		const e = new Engine({ items: [{ id: 1, v: 'a' }, { id: 2, v: 'b' }] }, { schema });
 		e.replace('$.items[0].v', 'z');
 		expect(e.diff()).toEqual([
-			{ op: 'replace', path: "$['items'][0]['v']", oldValue: 'a', value: 'z', identity: 1 },
+			{ op: 'replace', path: "$['items'][?@['id'] == 1]['v']", oldValue: 'a', value: 'z', identity: 1 },
 		]);
 	});
 
@@ -1186,7 +1186,7 @@ describe('Engine — identity-keyed array diff', () => {
 		const e = new Engine({ items: [{ id: 1, v: 'a' }, { id: 2, v: 'b' }] });
 		e.delete('$.items[0]');
 		expect(e.diff('$.items', { key: 'id' })).toEqual([
-			{ op: 'remove', path: "$['items'][0]", value: { id: 1, v: 'a' }, identity: 1 },
+			{ op: 'remove', path: "$['items'][?@['id'] == 1]", value: { id: 1, v: 'a' }, identity: 1 },
 		]);
 	});
 
@@ -1211,7 +1211,7 @@ describe('Engine — identity-keyed array diff', () => {
 		);
 		e.delete('$.groups[0].members[0]');
 		expect(e.diff()).toEqual([
-			{ op: 'remove', path: "$['groups'][0]['members'][0]", value: { uid: 10 }, identity: 10 },
+			{ op: 'remove', path: "$['groups'][?@['gid'] == 1]['members'][?@['uid'] == 10]", value: { uid: 10 }, identity: 10 },
 		]);
 	});
 
@@ -1220,7 +1220,7 @@ describe('Engine — identity-keyed array diff', () => {
 		const lens = e.getNodeEngine('$.items');
 		e.replace('$.items[0].v', 'z');
 		expect(lens.diff()).toEqual([
-			{ op: 'replace', path: "$[0]['v']", absolutePath: "$['items'][0]['v']", oldValue: 'a', value: 'z', identity: 1 },
+			{ op: 'replace', path: "$[?@['id'] == 1]['v']", absolutePath: "$['items'][?@['id'] == 1]['v']", oldValue: 'a', value: 'z', identity: 1 },
 		]);
 	});
 
@@ -1266,7 +1266,7 @@ describe('Engine — identity-keyed array diff', () => {
 		e.delete('$.groups[0].members[0]');
 
 		expect(e.diff()).toEqual([
-			{ op: 'remove', path: "$['groups'][0]['members'][0]", value: { id: 's1', label: 'Alpha' }, identity: 's1' },
+			{ op: 'remove', path: "$['groups'][?@['id'] == \"p1\"]['members'][?@['id'] == \"s1\"]", value: { id: 's1', label: 'Alpha' }, identity: 's1' },
 		]);
 	});
 });
@@ -1283,7 +1283,7 @@ describe('Engine — $self set diff', () => {
 		const e = new Engine<any>({ tags: ['urgent', 'review'] }, { schema });
 		e.add('$.tags[0]', 'blocked');
 		expect(e.diff()).toEqual([
-			{ op: 'add', path: "$['tags'][0]", value: 'blocked', identity: 'blocked' },
+			{ op: 'add', path: '$[\'tags\'][?@ == "blocked"]', value: 'blocked', identity: 'blocked' },
 		]);
 	});
 
@@ -1291,7 +1291,7 @@ describe('Engine — $self set diff', () => {
 		const e = new Engine<any>({ tags: ['urgent', 'review', 'blocked'] }, { schema });
 		e.delete('$.tags[0]');
 		expect(e.diff()).toEqual([
-			{ op: 'remove', path: "$['tags'][0]", value: 'urgent', identity: 'urgent' },
+			{ op: 'remove', path: '$[\'tags\'][?@ == "urgent"]', value: 'urgent', identity: 'urgent' },
 		]);
 	});
 
@@ -1317,8 +1317,8 @@ describe('Engine — $self set diff', () => {
 		const e = new Engine<any>({ ids: [1, 2, 3] }, { schema: numericSchema });
 		e.replace('$.ids', [2, 3, 4]);
 		expect(e.diff()).toEqual([
-			{ op: 'remove', path: "$['ids'][0]", value: 1, identity: 1 },
-			{ op: 'add', path: "$['ids'][2]", value: 4, identity: 4 },
+			{ op: 'remove', path: "$['ids'][?@ == 1]", value: 1, identity: 1 },
+			{ op: 'add', path: "$['ids'][?@ == 4]", value: 4, identity: 4 },
 		]);
 	});
 
@@ -1326,7 +1326,7 @@ describe('Engine — $self set diff', () => {
 		const e = new Engine<any>({ tags: ['a', 'b'] });
 		e.delete('$.tags[0]');
 		expect(e.diff('$.tags', { key: '$self' })).toEqual([
-			{ op: 'remove', path: "$['tags'][0]", value: 'a', identity: 'a' },
+			{ op: 'remove', path: '$[\'tags\'][?@ == "a"]', value: 'a', identity: 'a' },
 		]);
 	});
 
@@ -1340,5 +1340,159 @@ describe('Engine — $self set diff', () => {
 		const e = new Engine<any>({ tags: [['a'], ['b']] }, { schema });
 		e.replace('$.tags[0]', ['c']);
 		expect(() => e.diff()).toThrow(/\$self.*requires primitive items/);
+	});
+});
+
+describe('Engine — keyed diff identity paths', () => {
+	const usersSchema = {
+		type: 'object',
+		properties: {
+			users: { type: 'array', 'x-key': 'email', items: { type: 'object' } },
+		},
+	};
+
+	const makeUsers = () =>
+		new Engine<any>(
+			{
+				users: [
+					{ email: 'a@x.com', region: 'us' },
+					{ email: 'b@x.com', region: 'us' },
+					{ email: 'c@x.com', region: 'us' },
+				],
+			},
+			{ schema: usersSchema },
+		);
+
+	const editUsers = (e: Engine<any>) => {
+		e.delete("$.users[?@.email == 'b@x.com']");
+		e.replace("$.users[?@.email == 'c@x.com'].region", 'eu');
+		e.add('$.users[-]', { email: 'd@x.com', region: 'ap' });
+	};
+
+	it('emits identity paths for keyed arrays', () => {
+		const e = makeUsers();
+		editUsers(e);
+		expect(e.diff()).toEqual([
+			{ op: 'remove', path: `$['users'][?@['email'] == "b@x.com"]`, value: { email: 'b@x.com', region: 'us' }, identity: 'b@x.com' },
+			{ op: 'add', path: `$['users'][?@['email'] == "d@x.com"]`, value: { email: 'd@x.com', region: 'ap' }, identity: 'd@x.com' },
+			{ op: 'replace', path: `$['users'][?@['email'] == "c@x.com"]['region']`, oldValue: 'us', value: 'eu', identity: 'c@x.com' },
+		]);
+	});
+
+	it('scopes keyed diff by identity filter', () => {
+		const e = makeUsers();
+		editUsers(e);
+		expect(e.diff("$.users[?@.email == 'c@x.com']")).toEqual([
+			{ op: 'replace', path: `$['users'][?@['email'] == "c@x.com"]['region']`, oldValue: 'us', value: 'eu', identity: 'c@x.com' },
+		]);
+		// ghost scope resolves through base
+		expect(e.diff("$.users[?@.email == 'b@x.com']")).toEqual([
+			{ op: 'remove', path: `$['users'][?@['email'] == "b@x.com"]`, value: { email: 'b@x.com', region: 'us' }, identity: 'b@x.com' },
+		]);
+	});
+
+	it('diff paths feed back into mutations correctly', () => {
+		const e = makeUsers();
+		editUsers(e);
+		const replaceOp = e.diff().find(o => o.op === 'replace' && o.identity === 'c@x.com')! as any;
+		e.replace(replaceOp.path, 'us'); // hits c, never b/d
+		expect(e.draft.users.find((u: any) => u.email === 'c@x.com').region).toBe('us');
+		const removeOp = e.diff().find(o => o.identity === 'b@x.com')! as any;
+		expect(e.get(removeOp.path)).toEqual([]); // ghost: nothing in draft, no error
+		const addOp = e.diff().find(o => o.identity === 'd@x.com')! as any;
+		e.delete(addOp.path); // removes exactly d
+		expect(e.draft.users.map((u: any) => u.email)).toEqual(['a@x.com', 'c@x.com']);
+	});
+
+	it('scoping by index into a keyed array matches both slot occupants', () => {
+		// base[1] is b (removed), draft[1] is c (edited) — index scoping is
+		// inherently ambiguous in keyed arrays, so both items' ops are returned.
+		const e = makeUsers();
+		editUsers(e);
+		const ops = e.diff('$.users[1]');
+		expect(ops.map(o => (o as any).identity).sort()).toEqual(['b@x.com', 'c@x.com']);
+	});
+
+	it('identity paths compose through nested keyed arrays', () => {
+		const schema = {
+			type: 'object',
+			properties: {
+				users: {
+					type: 'array',
+					'x-key': 'email',
+					items: {
+						type: 'object',
+						properties: {
+							tags: { type: 'array', 'x-key': '$self', items: { type: 'string' } },
+						},
+					},
+				},
+			},
+		};
+		const e = new Engine<any>({ users: [{ email: 'a@x.com', tags: ['x', 'y'] }] }, { schema });
+		e.delete('$.users[0].tags[0]');
+		expect(e.diff()).toEqual([
+			{ op: 'remove', path: `$['users'][?@['email'] == "a@x.com"]['tags'][?@ == "x"]`, value: 'x', identity: 'x' },
+		]);
+	});
+
+	it('throws on duplicate identities', () => {
+		const e = new Engine<any>({ users: [{ email: 'a@x.com' }, { email: 'a@x.com' }] }, { schema: usersSchema });
+		expect(() => e.diff()).toThrow(/duplicate identity "a@x\.com"/);
+	});
+
+	it('throws on items missing the key field', () => {
+		const e = new Engine<any>({ users: [{ name: 'x' }] }, { schema: usersSchema });
+		expect(() => e.diff()).toThrow(/no primitive 'email' identity/);
+	});
+
+	it('escapes identity values containing quotes, round-trippable', () => {
+		const tricky = 'o\'brien"@x.com';
+		const e = new Engine<any>({ users: [{ email: tricky, region: 'us' }] }, { schema: usersSchema });
+		e.replace('$.users[0].region', 'eu');
+		const [op] = e.diff() as any[];
+		expect(op.identity).toBe(tricky);
+		expect(e.get(op.path)).toEqual([{ path: "$['users'][0]['region']", value: 'eu' }]);
+	});
+
+	it('numeric and null identities serialize bare in the filter', () => {
+		const schema = {
+			type: 'object',
+			properties: { items: { type: 'array', 'x-key': 'id', items: { type: 'object' } } },
+		};
+		const e = new Engine<any>({ items: [{ id: 7, v: 'a' }] }, { schema });
+		e.delete('$.items[0]');
+		expect(e.diff()).toEqual([
+			{ op: 'remove', path: "$['items'][?@['id'] == 7]", value: { id: 7, v: 'a' }, identity: 7 },
+		]);
+	});
+
+	it('inline key override works on an array nested inside another array', () => {
+		const e = new Engine<any>({
+			teams: [
+				{ name: 't1', users: [{ id: 1 }, { id: 2 }] },
+				{ name: 't2', users: [{ id: 9 }] },
+			],
+		});
+		e.delete('$.teams[0].users[0]');
+		expect(e.diff('$.teams[0].users', { key: 'id' })).toEqual([
+			{ op: 'remove', path: "$['teams'][0]['users'][?@['id'] == 1]", value: { id: 1 }, identity: 1 },
+		]);
+	});
+
+	it('NodeEngine lens on a keyed array element rebases identity paths', () => {
+		const e = makeUsers();
+		const lens = e.getNodeEngine("$.users[?@.email == 'c@x.com']");
+		e.replace("$.users[?@.email == 'c@x.com'].region", 'eu');
+		expect(lens.diff()).toEqual([
+			{
+				op: 'replace',
+				path: "$['region']",
+				absolutePath: `$['users'][?@['email'] == "c@x.com"]['region']`,
+				oldValue: 'us',
+				value: 'eu',
+				identity: 'c@x.com',
+			},
+		]);
 	});
 });

@@ -98,8 +98,66 @@ function extractKeyMap(schema: Record<string, any>, path = '$'): Map<string, str
 	return map;
 }
 
-function toPathPattern(path: string): string {
-	return path.replace(/\[\d+\]/g, '[*]');
+// An identity segment addresses an element of a keyed array by its x-key
+// value instead of its position. key === null means x-key: '$self' (the item
+// is its own identity). Indexes inside keyed arrays go stale on the next
+// splice and differ between base and draft (a removed element only has a
+// position in base, an added one only in draft), so identity is the only
+// address that can leave the engine.
+type IdentitySeg = { key: string | null; value: JsonValue };
+type Seg = string | number | IdentitySeg;
+
+// Escape rules for name segments, vendored from jsonpath-rfc9535
+// (dist/esm/core/path.js, Apache-2.0) so our output is byte-compatible with
+// the library's normalized paths. The library implements this internally
+// (toNormalizedKey) but does not export it.
+// biome-ignore lint/suspicious/noControlCharactersInRegex: control chars must be escaped
+const NAME_ESCAPE_REGEX = /[\u0000-\u001f'\\]/g;
+function escapeNameChar(ch: string): string {
+	const code = ch.charCodeAt(0);
+	switch (code) {
+		case 0x8: return '\\b';
+		case 0xc: return '\\f';
+		case 0xa: return '\\n';
+		case 0xd: return '\\r';
+		case 0x9: return '\\t';
+		case 0x27: return "\\'";
+		case 0x5c: return '\\\\';
+		default: return `\\u${code.toString(16).padStart(4, '0')}`;
+	}
+}
+function escapeName(name: string): string {
+	return name.replace(NAME_ESCAPE_REGEX, escapeNameChar);
+}
+
+// The single place path strings are built. Name/index segments follow the
+// library's normalized form; identity segments serialize as RFC 9535 filter
+// selectors, e.g. [?@['email'] == "b@x.com"]. Filter paths are valid queries
+// the library evaluates natively, but formally not RFC "Normalized Paths" —
+// the RFC's output format has no way to express identity.
+// JSON.stringify covers the filter literal: RFC 9535 double-quoted string
+// escapes are JSON-compatible, and numbers/booleans/null serialize bare.
+function segsToPath(segs: Seg[]): string {
+	let out = '$';
+	for (const seg of segs) {
+		if (typeof seg === 'number') out += `[${seg}]`;
+		else if (typeof seg === 'string') out += `['${escapeName(seg)}']`;
+		else if (seg.key === null) out += `[?@ == ${JSON.stringify(seg.value)}]`;
+		else out += `[?@['${escapeName(seg.key)}'] == ${JSON.stringify(seg.value)}]`;
+	}
+	return out;
+}
+
+// Pattern form for keyMap lookups: any array position (index or identity)
+// becomes [*], matching the shape extractKeyMap builds from a schema.
+// Built from segments, never by rewriting path strings — a property literally
+// named "x[0]" can't fool it.
+function segmentsToPattern(segments: (string | number)[]): string {
+	let out = '$';
+	for (const seg of segments) {
+		out += typeof seg === 'number' ? '[*]' : `['${seg}']`;
+	}
+	return out;
 }
 
 // In-place write at a non-root path against any target object. Used by
@@ -426,8 +484,13 @@ export class Engine<T extends JsonValue = JsonValue> {
 		if (options?.key && path) {
 			const resolved = paths(this.draft, path)[0] ?? paths(this.base, path)[0];
 			if (resolved) {
+				// Store the override in pattern form, since the walk looks keys up
+				// by pattern. A path resolving inside one array element therefore
+				// keys all sibling elements' arrays for this call — acceptable for
+				// a one-off override.
+				const pattern = segmentsToPattern(this.segmentsFrom(resolved));
 				const saved = this.keyMap;
-				this.keyMap = new Map([...this.keyMap, [resolved, options.key]]);
+				this.keyMap = new Map([...this.keyMap, [pattern, options.key]]);
 				try { return this._diff(path); }
 				finally { this.keyMap = saved; }
 			}
@@ -437,10 +500,45 @@ export class Engine<T extends JsonValue = JsonValue> {
 
 	private _diff(path?: string): DiffOp[] {
 		const ops: DiffOp[] = [];
-		this.diffNode(this.base, this.draft, '$', ops);
+		this.diffNode(this.base, this.draft, [], '$', ops);
 		if (!path) return ops;
-		const prefixes = [...new Set([...paths(this.draft, path), ...paths(this.base, path)])];
+		// Ops carry canonical paths (identity segments inside keyed arrays), so
+		// the resolved scope prefixes must be canonicalized against the document
+		// they were resolved from before the string prefix-match. Note: scoping
+		// by *index* into a keyed array matches both the base and draft occupant
+		// of that slot — index scoping is inherently ambiguous there; scope by
+		// identity filter for precision.
+		const prefixes = [...new Set([
+			...paths(this.draft, path).map(p => this.canonicalizePath(p, this.draft)),
+			...paths(this.base, path).map(p => this.canonicalizePath(p, this.base)),
+		])];
 		return ops.filter(op => prefixes.some(p => isUnderPrefix(opPath(op), p)));
+	}
+
+	// Converts a concrete index path (as returned by paths()) into canonical
+	// form: positions inside keyed arrays become identity segments, read off
+	// the element in `doc`. Object keys and unkeyed indexes pass through.
+	/** @internal */
+	canonicalizePath(concretePath: string, doc: JsonValue): string {
+		const segments = this.segmentsFrom(concretePath);
+		const out: Seg[] = [];
+		let pattern = '$';
+		let cur: any = doc;
+		for (const seg of segments) {
+			if (typeof seg === 'number') {
+				const key = Array.isArray(cur) ? this.keyMap.get(pattern) : undefined;
+				const item = Array.isArray(cur) ? cur[seg] : undefined;
+				if (key === '$self') out.push({ key: null, value: item });
+				else if (key !== undefined && isPlainObject(item) && item[key] !== undefined) out.push({ key, value: item[key] });
+				else out.push(seg);
+				pattern += '[*]';
+			} else {
+				out.push(seg);
+				pattern += `['${seg}']`;
+			}
+			cur = cur === null || cur === undefined ? undefined : cur[seg];
+		}
+		return segsToPath(out);
 	}
 
 	private moveOrCopy(from: string, to: string, isMove: boolean): void {
@@ -579,19 +677,42 @@ export class Engine<T extends JsonValue = JsonValue> {
 	//     because there's no deeper structure to compare.
 	private diffArrayByKey(
 		a: JsonValue[], b: JsonValue[],
-		path: string, key: string, ops: DiffOp[]
+		segs: Seg[], pattern: string, key: string, ops: DiffOp[]
 	): void {
-		const aMap = new Map(a.map((item, i) => [(item as any)[key], { item, i }]));
-		const bMap = new Map(b.map((item, i) => [(item as any)[key], { item, i }]));
+		const aMap = this.buildIdentityMap(a, key, segs);
+		const bMap = this.buildIdentityMap(b, key, segs);
 
-		for (const [id, { item, i }] of aMap)
-			if (!bMap.has(id)) ops.push({ op: OpType.Remove, path: `${path}[${i}]`, value: item, identity: id });
+		for (const [id, item] of aMap)
+			if (!bMap.has(id)) ops.push({ op: OpType.Remove, path: segsToPath([...segs, { key, value: id }]), value: item, identity: id });
 
-		for (const [id, { item, i }] of bMap)
-			if (!aMap.has(id)) ops.push({ op: OpType.Add, path: `${path}[${i}]`, value: item, identity: id });
+		for (const [id, item] of bMap)
+			if (!aMap.has(id)) ops.push({ op: OpType.Add, path: segsToPath([...segs, { key, value: id }]), value: item, identity: id });
 
-		for (const [id, { item: bItem, i: bIndex }] of bMap)
-			if (aMap.has(id)) this.diffNode(aMap.get(id)!.item, bItem, `${path}[${bIndex}]`, ops, id);
+		for (const [id, bItem] of bMap)
+			if (aMap.has(id)) this.diffNode(aMap.get(id)!, bItem, [...segs, { key, value: id }], `${pattern}[*]`, ops, id);
+	}
+
+	// Builds identity → item for one side of a keyed array, enforcing the
+	// contract x-key declares: every item is an object carrying a primitive
+	// identity, and identities are unique. Violations used to collapse
+	// silently in a Map and produce quietly wrong diffs — now they throw.
+	private buildIdentityMap(arr: JsonValue[], key: string, segs: Seg[]): Map<JsonValue, JsonValue> {
+		const map = new Map<JsonValue, JsonValue>();
+		for (const item of arr) {
+			const id = isPlainObject(item) ? item[key] : undefined;
+			if (id === undefined || (id !== null && typeof id === 'object')) {
+				throw new Error(
+					`diff: item in keyed array at ${segsToPath(segs)} has no primitive '${key}' identity`
+				);
+			}
+			if (map.has(id)) {
+				throw new Error(
+					`diff: duplicate identity ${JSON.stringify(id)} for key '${key}' in array at ${segsToPath(segs)}`
+				);
+			}
+			map.set(id, item);
+		}
+		return map;
 	}
 
 	// $self set diff: the item itself is its identity. Reduces to symmetric set
@@ -607,58 +728,61 @@ export class Engine<T extends JsonValue = JsonValue> {
 	// is the cleaner answer when items have a natural ID. Tracked in #18.
 	private diffArrayBySelf(
 		a: JsonValue[], b: JsonValue[],
-		path: string, ops: DiffOp[]
+		segs: Seg[], ops: DiffOp[]
 	): void {
 		for (const arr of [a, b]) {
 			for (const item of arr) {
 				if (item !== null && typeof item === 'object') {
 					throw new Error(
-						`diff: x-key '$self' at ${path} requires primitive items, got ` +
+						`diff: x-key '$self' at ${segsToPath(segs)} requires primitive items, got ` +
 						`${Array.isArray(item) ? 'array' : 'object'}. ` +
 						`Use x-key: '<field>' for arrays of objects. See #18.`
 					);
 				}
 			}
 		}
-		const aMap = new Map<JsonValue, number>();
-		a.forEach((item, i) => aMap.set(item, i));
-		const bMap = new Map<JsonValue, number>();
-		b.forEach((item, i) => bMap.set(item, i));
+		// Sets, not maps: $self declares set semantics, so duplicates collapse
+		// by design rather than erroring like keyed arrays do.
+		const aSet = new Set(a);
+		const bSet = new Set(b);
 
-		for (const [item, i] of aMap)
-			if (!bMap.has(item)) ops.push({ op: OpType.Remove, path: `${path}[${i}]`, value: item, identity: item });
+		for (const item of aSet)
+			if (!bSet.has(item)) ops.push({ op: OpType.Remove, path: segsToPath([...segs, { key: null, value: item }]), value: item, identity: item });
 
-		for (const [item, i] of bMap)
-			if (!aMap.has(item)) ops.push({ op: OpType.Add, path: `${path}[${i}]`, value: item, identity: item });
+		for (const item of bSet)
+			if (!aSet.has(item)) ops.push({ op: OpType.Add, path: segsToPath([...segs, { key: null, value: item }]), value: item, identity: item });
 	}
 
-	private diffNode(a: JsonValue, b: JsonValue, path: string, ops: DiffOp[], identity?: JsonValue): void {
+	// `segs` is the canonical address of the node pair (identity segments
+	// inside keyed arrays); `pattern` is the same location in keyMap form
+	// (every array hop is [*]) for x-key lookups.
+	private diffNode(a: JsonValue, b: JsonValue, segs: Seg[], pattern: string, ops: DiffOp[], identity?: JsonValue): void {
 		if (Array.isArray(a) && Array.isArray(b)) {
-			const key = this.keyMap.get(path) ?? this.keyMap.get(toPathPattern(path));
-			if (key === '$self') { this.diffArrayBySelf(a, b, path, ops); return; }
+			const key = this.keyMap.get(pattern);
+			if (key === '$self') { this.diffArrayBySelf(a, b, segs, ops); return; }
 			// diffArrayByKey stamps its own identity per item, so outer identity is not forwarded
-			if (key) { this.diffArrayByKey(a, b, path, key, ops); return; }
+			if (key) { this.diffArrayByKey(a, b, segs, pattern, key, ops); return; }
 			const maxLen = Math.max(a.length, b.length);
 			for (let i = 0; i < maxLen; i++) {
-				const child = `${path}[${i}]`;
-				if (i >= a.length) ops.push({ op: OpType.Add, path: child, value: b[i], ...(identity !== undefined && { identity }) });
-				else if (i >= b.length) ops.push({ op: OpType.Remove, path: child, value: a[i], ...(identity !== undefined && { identity }) });
-				else this.diffNode(a[i], b[i], child, ops, identity);
+				const child = [...segs, i];
+				if (i >= a.length) ops.push({ op: OpType.Add, path: segsToPath(child), value: b[i], ...(identity !== undefined && { identity }) });
+				else if (i >= b.length) ops.push({ op: OpType.Remove, path: segsToPath(child), value: a[i], ...(identity !== undefined && { identity }) });
+				else this.diffNode(a[i], b[i], child, `${pattern}[*]`, ops, identity);
 			}
 		} else if (isPlainObject(a) && isPlainObject(b)) {
 			const ao = a as Record<string, JsonValue>;
 			const bo = b as Record<string, JsonValue>;
 			const allKeys = new Set([...Object.keys(ao), ...Object.keys(bo)]);
 			for (const key of allKeys) {
-				const child = `${path}['${key}']`;
-				if (!(key in ao)) ops.push({ op: OpType.Add, path: child, value: bo[key], ...(identity !== undefined && { identity }) });
-				else if (!(key in bo)) ops.push({ op: OpType.Remove, path: child, value: ao[key], ...(identity !== undefined && { identity }) });
-				else this.diffNode(ao[key], bo[key], child, ops, identity);
+				const child = [...segs, key];
+				if (!(key in ao)) ops.push({ op: OpType.Add, path: segsToPath(child), value: bo[key], ...(identity !== undefined && { identity }) });
+				else if (!(key in bo)) ops.push({ op: OpType.Remove, path: segsToPath(child), value: ao[key], ...(identity !== undefined && { identity }) });
+				else this.diffNode(ao[key], bo[key], child, `${pattern}['${key}']`, ops, identity);
 			}
 		} else if (a !== b) {
 			// Covers: same-type primitives with different values, and type changes
 			// (e.g. object → array). In both cases there's nothing to recurse into.
-			ops.push({ op: OpType.Replace, path, oldValue: a, value: b, ...(identity !== undefined && { identity }) });
+			ops.push({ op: OpType.Replace, path: segsToPath(segs), oldValue: a, value: b, ...(identity !== undefined && { identity }) });
 		}
 	}
 
@@ -950,13 +1074,17 @@ export class NodeEngine<T extends JsonValue = JsonValue> {
 	// Each op also carries absolutePath so callers that need the full document
 	// path don't have to re-join it themselves.
 	diff(path?: string, options?: { key?: string }): DiffOp[] {
+		// Ops carry canonical paths (identity segments inside keyed arrays), so
+		// the lens prefix must be canonicalized the same way before matching.
+		// Done per call — the identity occupying an index can change between calls.
+		const canonicalPrefix = this.parent.canonicalizePath(this.prefix, this.parent.draft);
 		return this.parent.diff(
 			path ? joinPath(this.prefix, path) : undefined,
 			options,
 		)
-			.filter(op => isUnderPrefix(opPath(op), this.prefix))
+			.filter(op => isUnderPrefix(opPath(op), canonicalPrefix))
 			.map(op => {
-				const rebased = rebaseDiffOp(op, this.prefix);
+				const rebased = rebaseDiffOp(op, canonicalPrefix);
 				if ('path' in rebased) return { ...rebased, absolutePath: (op as any).path };
 				return rebased;
 			});
