@@ -31,13 +31,18 @@ export type DiffOp =
 	| { op: OpType.Move | OpType.Copy; from: string; to: string }
 	| { op: OpType.Revert; path: string; absolutePath?: string };
 
-// One element of the merged identity view returned by items(). Entries
-// deliberately carry no document paths — identity is the handle, and acting
-// on an entry means addressing it by identity filter. Pure data, so the view
-// is JSON-serializable as-is.
+// One element of the merged identity view returned by items(). Pure data,
+// so the view is JSON-serializable as-is.
 export type ItemEntry<V extends JsonValue = JsonValue> = {
-	// The x-key value (or the item itself under x-key: '$self').
+	// The x-key value (or the item itself under x-key: '$self'). The data
+	// handle — use it for list tracking and display.
 	identity: JsonValue;
+	// The action handle: engine-built canonical identity path for this
+	// element, e.g. $['users'][?@['email'] == "b@x.com"]. Feeds straight into
+	// delete/replace/get/getBase; resolves to the live item in draft, the
+	// ghost in base, never a different element. Never an index — it can't go
+	// stale when the array is spliced.
+	path: string;
 	// Absent for unchanged items.
 	op?: OpType.Add | OpType.Remove | OpType.Replace;
 	// The draft item — or the base item when op is Remove (the ghost content).
@@ -536,7 +541,10 @@ export class Engine<T extends JsonValue = JsonValue> {
 	// the element in `doc`. Object keys and unkeyed indexes pass through.
 	/** @internal */
 	canonicalizePath(concretePath: string, doc: JsonValue): string {
-		const segments = this.segmentsFrom(concretePath);
+		return segsToPath(this.canonicalizeSegs(this.segmentsFrom(concretePath), doc));
+	}
+
+	private canonicalizeSegs(segments: (string | number)[], doc: JsonValue): Seg[] {
 		const out: Seg[] = [];
 		let pattern = '$';
 		let cur: any = doc;
@@ -554,7 +562,7 @@ export class Engine<T extends JsonValue = JsonValue> {
 			}
 			cur = cur === null || cur === undefined ? undefined : cur[seg];
 		}
-		return segsToPath(out);
+		return out;
 	}
 
 	// Merged identity view of a keyed array — the read model a list UI needs.
@@ -589,15 +597,21 @@ export class Engine<T extends JsonValue = JsonValue> {
 		const a = Array.isArray(baseVal) ? baseVal : [];
 		const b = Array.isArray(draftVal) ? draftVal : [];
 
-		if (key === '$self') return this.itemsBySelf(a, b, normPath) as ItemEntry<V>[];
+		// Entry paths are canonical: the prefix up to the array is canonicalized
+		// against the side the array resolved on, then the element's identity
+		// segment is appended — same serializer, same dialect as diff() output.
+		const canonSegs = this.canonicalizeSegs(segs, Array.isArray(draftVal) ? this.draft : this.base);
+
+		if (key === '$self') return this.itemsBySelf(a, b, canonSegs) as ItemEntry<V>[];
 
 		const aMap = this.buildIdentityMap(a, key, segs);
 		const bMap = this.buildIdentityMap(b, key, segs);
+		const pathOf = (id: JsonValue) => segsToPath([...canonSegs, { key, value: id }]);
 
 		const entries: ItemEntry[] = [];
 		for (const [id, item] of bMap) {
 			if (!aMap.has(id)) {
-				entries.push({ identity: id, op: OpType.Add, value: item });
+				entries.push({ identity: id, path: pathOf(id), op: OpType.Add, value: item });
 				continue;
 			}
 			// Item-relative diff: segments start fresh at the item (so paths come
@@ -605,11 +619,11 @@ export class Engine<T extends JsonValue = JsonValue> {
 			// nested x-keys keep resolving.
 			const ops: DiffOp[] = [];
 			this.diffNode(aMap.get(id)!, item, [], `${pattern}[*]`, ops);
-			if (ops.length === 0) entries.push({ identity: id, value: item });
-			else entries.push({ identity: id, op: OpType.Replace, value: item, changes: ops });
+			if (ops.length === 0) entries.push({ identity: id, path: pathOf(id), value: item });
+			else entries.push({ identity: id, path: pathOf(id), op: OpType.Replace, value: item, changes: ops });
 		}
 		for (const [id, item] of aMap) {
-			if (!bMap.has(id)) entries.push({ identity: id, op: OpType.Remove, value: item });
+			if (!bMap.has(id)) entries.push({ identity: id, path: pathOf(id), op: OpType.Remove, value: item });
 		}
 		return entries as ItemEntry<V>[];
 	}
@@ -618,29 +632,30 @@ export class Engine<T extends JsonValue = JsonValue> {
 	// collapse, reorders are invisible, and replace can never occur because
 	// equal primitives are the same set member. Same primitive-only restriction
 	// as diffArrayBySelf, for the same reason (reference equality on objects).
-	private itemsBySelf(a: JsonValue[], b: JsonValue[], path: string): ItemEntry[] {
+	private itemsBySelf(a: JsonValue[], b: JsonValue[], canonSegs: Seg[]): ItemEntry[] {
 		for (const arr of [a, b]) {
 			for (const item of arr) {
 				if (item !== null && typeof item === 'object') {
 					throw new Error(
-						`items: x-key '$self' at ${path} requires primitive items, got ` +
+						`items: x-key '$self' at ${segsToPath(canonSegs)} requires primitive items, got ` +
 						`${Array.isArray(item) ? 'array' : 'object'}. ` +
 						`Use x-key: '<field>' for arrays of objects.`
 					);
 				}
 			}
 		}
+		const pathOf = (item: JsonValue) => segsToPath([...canonSegs, { key: null, value: item }]);
 		const aSet = new Set(a);
 		const entries: ItemEntry[] = [];
 		const seen = new Set<JsonValue>();
 		for (const item of b) {
 			if (seen.has(item)) continue;
 			seen.add(item);
-			if (aSet.has(item)) entries.push({ identity: item, value: item });
-			else entries.push({ identity: item, op: OpType.Add, value: item });
+			if (aSet.has(item)) entries.push({ identity: item, path: pathOf(item), value: item });
+			else entries.push({ identity: item, path: pathOf(item), op: OpType.Add, value: item });
 		}
 		for (const item of aSet) {
-			if (!seen.has(item)) entries.push({ identity: item, op: OpType.Remove, value: item });
+			if (!seen.has(item)) entries.push({ identity: item, path: pathOf(item), op: OpType.Remove, value: item });
 		}
 		return entries;
 	}
@@ -1194,10 +1209,13 @@ export class NodeEngine<T extends JsonValue = JsonValue> {
 			});
 	}
 
-	// Identity view — entries carry no paths, so nothing needs rebasing;
-	// only the array path itself is joined into the parent frame.
+	// Identity view — the array path joins into the parent frame, and entry
+	// paths come back rebased into the child frame so they feed straight into
+	// this lens's own ops (same canonical-prefix handling as diff()).
 	items<V extends JsonValue = JsonValue>(arrayPath: string, options?: { key?: string }): ItemEntry<V>[] {
-		return this.parent.items<V>(joinPath(this.prefix, arrayPath), options);
+		const canonicalPrefix = this.parent.canonicalizePath(this.prefix, this.parent.draft);
+		return this.parent.items<V>(joinPath(this.prefix, arrayPath), options)
+			.map(entry => ({ ...entry, path: rebasePath(entry.path, canonicalPrefix) }));
 	}
 
 	// Nested children compose by joining paths and creating a fresh lens

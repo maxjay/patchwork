@@ -70,13 +70,15 @@ const store = fromEngine(engine);
 | `store.diff(path?, options?)` | `Signal<DiffOp[]>` | structural diff |
 | `store.items<V>(path, options?)` | `Signal<ItemEntry<V>[]>` | merged identity view of a keyed array |
 
-`items` is the read model for list UIs over keyed arrays: every entry has a stable `identity` (use it for `track`), an op label (`add` / `remove` / `replace`, absent when unchanged), and the item `value` — base value for removed ghosts. See the README's `items()` section for the entry shape.
+`items` is the read model for list UIs over keyed arrays: every entry has a stable `identity` (use it for `track`), an engine-built `path` (pass it to mutations), an op label (`add` / `remove` / `replace`, absent when unchanged), and the item `value` — base value for removed ghosts. See the README's `items()` section for the entry shape.
 
 ```ts
 @Component({
   template: `
     @for (row of users(); track row.identity) {
-      <user-row [user]="row.value" [class.ghost]="row.op === 'remove'" [class.added]="row.op === 'add'" />
+      <user-row [user]="row.value" [class.ghost]="row.op === 'remove'" [class.added]="row.op === 'add'">
+        <button (click)="store.delete(row.path)">remove</button>
+      </user-row>
     }
   `,
 })

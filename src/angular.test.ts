@@ -289,7 +289,7 @@ describe('PatchworkStore.items', () => {
 		);
 		const items = store.items('$.users');
 		expect(items()).toEqual([
-			{ identity: 'a@x.com', value: { email: 'a@x.com', region: 'us' } },
+			{ identity: 'a@x.com', path: `$['users'][?@['email'] == "a@x.com"]`, value: { email: 'a@x.com', region: 'us' } },
 		]);
 
 		store.delete('$.users[0]');

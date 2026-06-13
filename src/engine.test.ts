@@ -1524,15 +1524,16 @@ describe('Engine.items', () => {
 		e.add('$.users[-]', { email: 'd@x.com', region: 'ap' });
 
 		expect(e.items('$.users')).toEqual([
-			{ identity: 'a@x.com', value: { email: 'a@x.com', region: 'us' } },
+			{ identity: 'a@x.com', path: `$['users'][?@['email'] == "a@x.com"]`, value: { email: 'a@x.com', region: 'us' } },
 			{
 				identity: 'c@x.com',
+				path: `$['users'][?@['email'] == "c@x.com"]`,
 				op: 'replace',
 				value: { email: 'c@x.com', region: 'eu' },
 				changes: [{ op: 'replace', path: "$['region']", oldValue: 'us', value: 'eu' }],
 			},
-			{ identity: 'd@x.com', op: 'add', value: { email: 'd@x.com', region: 'ap' } },
-			{ identity: 'b@x.com', op: 'remove', value: { email: 'b@x.com', region: 'us' } },
+			{ identity: 'd@x.com', path: `$['users'][?@['email'] == "d@x.com"]`, op: 'add', value: { email: 'd@x.com', region: 'ap' } },
+			{ identity: 'b@x.com', path: `$['users'][?@['email'] == "b@x.com"]`, op: 'remove', value: { email: 'b@x.com', region: 'us' } },
 		]);
 	});
 
@@ -1598,8 +1599,8 @@ describe('Engine.items', () => {
 		const e = new Engine<any>({ users: [{ id: 1, n: 'a' }, { id: 2, n: 'b' }] });
 		e.delete('$.users[0]');
 		expect(e.items('$.users', { key: 'id' })).toEqual([
-			{ identity: 2, value: { id: 2, n: 'b' } },
-			{ identity: 1, op: 'remove', value: { id: 1, n: 'a' } },
+			{ identity: 2, path: "$['users'][?@['id'] == 2]", value: { id: 2, n: 'b' } },
+			{ identity: 1, path: "$['users'][?@['id'] == 1]", op: 'remove', value: { id: 1, n: 'a' } },
 		]);
 	});
 
@@ -1628,7 +1629,7 @@ describe('Engine.items', () => {
 		const e = new Engine<any>({}, { schema: usersSchema });
 		e.add('$.users', [{ email: 'a@x.com', region: 'us' }]);
 		expect(e.items('$.users')).toEqual([
-			{ identity: 'a@x.com', op: 'add', value: { email: 'a@x.com', region: 'us' } },
+			{ identity: 'a@x.com', path: `$['users'][?@['email'] == "a@x.com"]`, op: 'add', value: { email: 'a@x.com', region: 'us' } },
 		]);
 	});
 
@@ -1652,9 +1653,9 @@ describe('Engine.items', () => {
 		e.add('$.perms[-]', 'admin');
 		e.add('$.perms[-]', 'admin');
 		expect(e.items('$.perms')).toEqual([
-			{ identity: 'read', value: 'read' },
-			{ identity: 'admin', op: 'add', value: 'admin' },
-			{ identity: 'write', op: 'remove', value: 'write' },
+			{ identity: 'read', path: '$[\'perms\'][?@ == "read"]', value: 'read' },
+			{ identity: 'admin', path: '$[\'perms\'][?@ == "admin"]', op: 'add', value: 'admin' },
+			{ identity: 'write', path: '$[\'perms\'][?@ == "write"]', op: 'remove', value: 'write' },
 		]);
 	});
 
@@ -1663,12 +1664,25 @@ describe('Engine.items', () => {
 		expect(() => e.items('$.perms', { key: '$self' })).toThrow(/requires primitive items/);
 	});
 
-	it('entry identity addresses the item in every engine op', () => {
+	it('entry.path feeds straight into engine ops', () => {
 		const e = makeUsers();
 		e.delete("$.users[?@.email == 'b@x.com']");
 		const ghost = e.items('$.users').find(x => x.op === 'remove')!;
-		// acting on an entry = addressing by identity filter
-		expect(e.getBase(`$.users[?@.email == '${ghost.identity}']`)).toHaveLength(1);
+		expect(e.getBase(ghost.path)).toHaveLength(1);   // ghost readable from base
+		expect(e.get(ghost.path)).toEqual([]);           // gone from draft, no error
+
+		const live = e.items('$.users').find(x => x.identity === 'c@x.com')!;
+		e.replace(`${live.path}['region']`, 'eu');       // path + field segment
+		expect(e.draft.users.find((u: any) => u.email === 'c@x.com').region).toBe('eu');
+		e.delete(live.path);                             // removes exactly c
+		expect(e.draft.users.map((u: any) => u.email)).toEqual(['a@x.com']);
+	});
+
+	it('entry.path escaping round-trips identities containing quotes', () => {
+		const tricky = 'o\'brien"@x.com';
+		const e = new Engine<any>({ users: [{ email: tricky, region: 'us' }] }, { schema: usersSchema });
+		const [entry] = e.items('$.users');
+		expect(e.get(entry.path)).toHaveLength(1);
 	});
 });
 
@@ -1692,7 +1706,9 @@ describe('NodeEngine.items', () => {
 		const team = e.getNodeEngine('$.team');
 		team.delete('$.users[0]');
 		expect(team.items('$.users')).toEqual([
-			{ identity: 'a@x.com', op: 'remove', value: { email: 'a@x.com', region: 'us' } },
+			{ identity: 'a@x.com', path: `$['users'][?@['email'] == "a@x.com"]`, op: 'remove', value: { email: 'a@x.com', region: 'us' } },
 		]);
+		// rebased path feeds back into the lens's own ops
+		expect(team.getBase(team.items('$.users')[0].path)).toHaveLength(1);
 	});
 });

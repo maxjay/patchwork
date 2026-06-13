@@ -254,11 +254,15 @@ Restricted to primitive items. For sets of objects, add a stable ID field and us
 ```ts
 engine.items('$.users');
 // [
-//   { identity: 'a@x.com',                value: { email: 'a@x.com', region: 'us' } },
-//   { identity: 'c@x.com', op: 'replace', value: { email: 'c@x.com', region: 'eu' },
+//   { identity: 'a@x.com', path: `$['users'][?@['email'] == "a@x.com"]`,
+//     value: { email: 'a@x.com', region: 'us' } },
+//   { identity: 'c@x.com', path: `$['users'][?@['email'] == "c@x.com"]`, op: 'replace',
+//     value: { email: 'c@x.com', region: 'eu' },
 //     changes: [ { op: 'replace', path: "$['region']", oldValue: 'us', value: 'eu' } ] },
-//   { identity: 'd@x.com', op: 'add',     value: { email: 'd@x.com', region: 'ap' } },
-//   { identity: 'b@x.com', op: 'remove',  value: { email: 'b@x.com', region: 'us' } },
+//   { identity: 'd@x.com', path: `$['users'][?@['email'] == "d@x.com"]`, op: 'add',
+//     value: { email: 'd@x.com', region: 'ap' } },
+//   { identity: 'b@x.com', path: `$['users'][?@['email'] == "b@x.com"]`, op: 'remove',
+//     value: { email: 'b@x.com', region: 'us' } },
 // ]
 ```
 
@@ -267,7 +271,15 @@ engine.items('$.users');
 - `remove` — present in base only; `value` carries the base item, ready to render as a ghost row.
 - `replace` — present in both with differences; `changes` carries the field-level ops with paths **relative to the item** (identity filters for any nested keyed arrays).
 
-Entries deliberately contain no document paths — `identity` is the handle. To act on an entry, address it by identity filter: `engine.delete("$.users[?@.email == 'd@x.com']")`. Draft items come first in draft order, then removed items in base order; reorder freely in the UI.
+Two handles per entry: `identity` is the data handle (list tracking, display), `path` is the action handle — an engine-built canonical identity path that feeds straight into any op, with quoting/escaping handled:
+
+```ts
+engine.delete(row.path);                       // remove this row
+engine.replace(`${row.path}['region']`, 'eu'); // edit a field on this row
+engine.getBase(row.path);                      // read a ghost's base content
+```
+
+Never an index, so it can't go stale when the array is spliced. Draft items come first in draft order, then removed items in base order; reorder freely in the UI.
 
 The identity key comes from the schema's `x-key`, or inline: `engine.items('$.users', { key: 'email' })`. `x-key: '$self'` arrays work too — set semantics, so entries are only ever unchanged / `add` / `remove`.
 
@@ -410,7 +422,8 @@ type DiffOp =
 
 ```ts
 type ItemEntry<V = JsonValue> = {
-  identity: JsonValue;                    // the x-key value (the item itself for $self)
+  identity: JsonValue;                    // data handle: the x-key value (the item itself for $self)
+  path: string;                           // action handle: canonical identity path, feeds into any op
   op?: 'add' | 'remove' | 'replace';      // absent = unchanged
   value: V;                               // draft item — base item when op is 'remove'
   changes?: DiffOp[];                     // only on 'replace'; paths relative to the item
