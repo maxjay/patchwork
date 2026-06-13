@@ -1,13 +1,15 @@
 import { paths, type JsonValue } from 'jsonpath-rfc9535';
 import parse from 'jsonpath-rfc9535/parser';
 import {
-	type IdentitySeg,
 	type Seg,
 	canonicalizeSegs,
 	ghostInsertIndex,
+	identityOf,
 	isPlainObject,
 	isUnderPrefix,
 	joinPath,
+	patternChild,
+	patternElement,
 	rebasePath,
 	resolveCanonical,
 	segmentsToPattern,
@@ -94,12 +96,12 @@ function extractKeyMap(schema: Record<string, any>, path = '$'): Map<string, str
 	if (schema['x-key']) map.set(path, schema['x-key'] as string);
 	if (schema.properties) {
 		for (const [key, sub] of Object.entries(schema.properties)) {
-			for (const [p, k] of extractKeyMap(sub as Record<string, any>, `${path}['${key}']`))
+			for (const [p, k] of extractKeyMap(sub as Record<string, any>, patternChild(path, key)))
 				map.set(p, k);
 		}
 	}
 	if (schema.items && isPlainObject(schema.items)) {
-		for (const [p, k] of extractKeyMap(schema.items as Record<string, any>, `${path}[*]`))
+		for (const [p, k] of extractKeyMap(schema.items as Record<string, any>, patternElement(path)))
 			map.set(p, k);
 	}
 	return map;
@@ -380,12 +382,15 @@ export class Engine<T extends JsonValue = JsonValue> {
 	}
 
 	// Pushes the inverse of pending changes at the path onto the stack as a
-	// new operation — history is never rewritten. Targets are collected from
-	// both draft and base and canonicalized against the side they resolved
-	// from: inside keyed arrays this is what keeps the base-frame and
-	// draft-frame occupants of the same index from colliding into one target
-	// (the index-application bug that used to clobber neighbors when
-	// reverting a removed element).
+	// new operation — history is never rewritten.
+	//
+	// Targets are collected from both draft and base and canonicalized against
+	// the side they resolved from: inside keyed arrays this is what keeps the
+	// base-frame and draft-frame occupants of the same index from colliding
+	// into one target (the index-application bug that used to clobber
+	// neighbors when reverting a removed element). Everything is captured
+	// eagerly — concrete positions and cloned values — like every other op;
+	// the stack's LIFO discipline guarantees redo replays from the same state.
 	revert(jsonPath: string): void {
 		const targets = new Map<string, Seg[]>();
 		for (const p of paths(this.draft, jsonPath)) {
@@ -397,112 +402,102 @@ export class Engine<T extends JsonValue = JsonValue> {
 			targets.set(segsToPath(canon), canon);
 		}
 
-		// Per-target plan, classified once at call time. Concrete positions are
-		// resolved freshly inside each run of doRevert — earlier actions in the
-		// same revert may splice the arrays later ones target, and under the
-		// stack's LIFO discipline a redo always replays from the same state, so
-		// fresh resolution is deterministic.
-		type Action =
-			| { kind: 'set'; canon: Seg[]; value: JsonValue }    // exists in base: restore (creates deleted fields)
-			| { kind: 'remove'; canon: Seg[] }                   // draft-only: a pending add, take it out
-			| { kind: 'insert'; canon: Seg[]; value: JsonValue; baseIndex: number }; // removed keyed element: re-insert
+		// Three kinds of work, applied as: sets (no index shifts), then removals
+		// in reverse index order, then re-insertions at positions planned against
+		// the post-removal sequence. Undo mirrors the same lists in reverse.
+		const sets: Array<{ segments: (string | number)[]; oldValue: any; value: any }> = [];
+		const removals: Array<{ segments: (string | number)[]; oldValue: any }> = [];
+		const ghosts: Array<{ canon: Seg[]; value: any; baseIndex: number }> = [];
 
-		const actions: Action[] = [];
-		const inserts: Action[] = [];
 		for (const canon of targets.values()) {
 			const baseSegs = resolveCanonical(this.base, canon);
-			if (baseSegs === undefined) {
-				if (resolveCanonical(this.draft, canon) !== undefined) actions.push({ kind: 'remove', canon });
+			const draftSegs = resolveCanonical(this.draft, canon);
+			if (baseSegs === undefined && draftSegs !== undefined) {
+				// draft-only: a pending add — take it out
+				removals.push({ segments: draftSegs, oldValue: structuredClone(this.getAt(draftSegs)) });
 				continue;
 			}
+			if (baseSegs === undefined) continue; // in neither — nothing to revert
 			const value = structuredClone(this.getAt(baseSegs, this.base));
 			const last = canon[canon.length - 1];
-			if (typeof last === 'object' && resolveCanonical(this.draft, canon) === undefined) {
-				inserts.push({ kind: 'insert', canon, value, baseIndex: baseSegs[baseSegs.length - 1] as number });
+			if (draftSegs !== undefined) {
+				// in both: restore the base value in place
+				sets.push({ segments: draftSegs, oldValue: structuredClone(this.getAt(draftSegs)), value });
+			} else if (typeof last === 'object') {
+				// a removed keyed element: re-insert (position planned below)
+				ghosts.push({ canon, value, baseIndex: baseSegs[baseSegs.length - 1] as number });
 			} else {
-				actions.push({ kind: 'set', canon, value });
+				// a deleted field under a surviving node: resolve the longest prefix
+				// that still exists in draft and create the remainder literally. If
+				// the remainder crosses an identity segment, the keyed element itself
+				// is gone — reverting the element is the right tool — so skip.
+				for (let i = canon.length - 1; i >= 0; i--) {
+					const prefix = resolveCanonical(this.draft, canon.slice(0, i));
+					if (prefix === undefined) continue;
+					const rest = canon.slice(i);
+					if (!rest.some(s => typeof s === 'object')) {
+						const segments = [...prefix, ...(rest as (string | number)[])];
+						sets.push({ segments, oldValue: structuredClone(this.getAt(segments)), value });
+					}
+					break;
+				}
 			}
 		}
-		// Re-inserts go last, in base order, so earlier restores anchor later ones.
-		inserts.sort((x, y) => (x as any).baseIndex - (y as any).baseIndex);
-		actions.push(...inserts);
 
-		// doRevert records what it actually did (resolved positions + previous
-		// values); undoRevert replays that log in reverse. Redo re-runs doRevert,
-		// which rebuilds the log, keeping the two in sync.
-		const log: Array<{ op: 'set' | 'remove' | 'insert'; segs: (string | number)[]; prev?: any }> = [];
+		// Plan ghost positions against the identity sequence each array will
+		// have after the removals run, in ascending base order so earlier
+		// restores anchor later ones.
+		ghosts.sort((x, y) => x.baseIndex - y.baseIndex);
+		const insertions: Array<{ segments: (string | number)[]; value: any }> = [];
+		const arrays = new Map<string, { segments: (string | number)[]; sequence: Array<JsonValue | undefined> }>();
+		for (const ghost of ghosts) {
+			const seg = ghost.canon[ghost.canon.length - 1];
+			if (typeof seg !== 'object') continue;
+			const parentCanon = ghost.canon.slice(0, -1);
+			const parentKey = segsToPath(parentCanon);
+			let arr = arrays.get(parentKey);
+			if (!arr) {
+				const segments = resolveCanonical(this.draft, parentCanon);
+				const draftArr = segments === undefined ? undefined : this.getAt(segments);
+				if (segments === undefined || !Array.isArray(draftArr)) continue;
+				const removedIdx = new Set(removals
+					.filter(r => r.segments.length === segments.length + 1 &&
+						typeof r.segments[segments.length] === 'number' &&
+						segments.every((s, i) => r.segments[i] === s))
+					.map(r => r.segments[segments.length] as number));
+				const sequence = draftArr
+					.filter((_, i) => !removedIdx.has(i))
+					.map(item => identityOf(item, seg));
+				arr = { segments, sequence };
+				arrays.set(parentKey, arr);
+			}
+			const parentBaseSegs = resolveCanonical(this.base, parentCanon);
+			const baseArr = parentBaseSegs === undefined ? undefined : this.getAt(parentBaseSegs, this.base);
+			const idx = Array.isArray(baseArr) ? ghostInsertIndex(baseArr, arr.sequence, seg) : arr.sequence.length;
+			arr.sequence.splice(idx, 0, seg.value);
+			insertions.push({ segments: [...arr.segments, idx], value: ghost.value });
+		}
 
 		const doRevert = () => {
-			log.length = 0;
-			for (const a of actions) {
-				if (a.kind === 'set') this.revertSet(a.canon, a.value, log);
-				else if (a.kind === 'remove') this.revertRemove(a.canon, log);
-				else this.revertInsert(a.canon, a.value, log);
-			}
+			for (const t of sets) this.setAt(t.segments, structuredClone(t.value));
+			// Reverse to preserve array indices when removing multiple elements
+			for (let i = removals.length - 1; i >= 0; i--) this.removeAt(removals[i].segments);
+			for (const t of insertions) this.insertAt(t.segments, structuredClone(t.value));
 		};
 
 		const undoRevert = () => {
-			for (let i = log.length - 1; i >= 0; i--) {
-				const entry = log[i];
-				if (entry.op === 'insert') {
-					this.removeAt(entry.segs);
-				} else if (entry.op === 'remove') {
-					this.insertAt(entry.segs, structuredClone(entry.prev));
-				} else if (entry.prev === undefined) {
-					this.removeAt(entry.segs);
-				} else {
-					this.setAt(entry.segs, structuredClone(entry.prev));
-				}
+			for (let i = insertions.length - 1; i >= 0; i--) this.removeAt(insertions[i].segments);
+			// Forward order to preserve array indices when restoring multiple elements
+			for (const t of removals) this.insertAt(t.segments, structuredClone(t.oldValue));
+			for (const t of sets) {
+				if (t.oldValue === undefined) this.removeAt(t.segments);
+				else this.setAt(t.segments, structuredClone(t.oldValue));
 			}
 		};
 
 		doRevert();
 		const op = { op: OpType.Revert, path: jsonPath } as DiffOp;
 		this.pushOperation({ op, undo: undoRevert, redo: doRevert });
-	}
-
-	private revertSet(canon: Seg[], value: JsonValue, log: Array<{ op: 'set' | 'remove' | 'insert'; segs: (string | number)[]; prev?: any }>): void {
-		let segs = resolveCanonical(this.draft, canon);
-		if (segs === undefined) {
-			// A deleted field under a surviving node: resolve the longest prefix
-			// that still exists in draft and create the remainder literally. If
-			// the remainder crosses an identity segment, the keyed element itself
-			// is gone — reverting the element is the right tool — so skip.
-			for (let i = canon.length - 1; i >= 0 && segs === undefined; i--) {
-				const prefix = resolveCanonical(this.draft, canon.slice(0, i));
-				if (prefix !== undefined) {
-					const rest = canon.slice(i);
-					if (rest.some(s => typeof s === 'object')) return;
-					segs = [...prefix, ...(rest as (string | number)[])];
-				}
-			}
-			if (segs === undefined) return;
-		}
-		const prev = structuredClone(this.getAt(segs));
-		this.setAt(segs, structuredClone(value));
-		log.push({ op: 'set', segs, prev });
-	}
-
-	private revertRemove(canon: Seg[], log: Array<{ op: 'set' | 'remove' | 'insert'; segs: (string | number)[]; prev?: any }>): void {
-		const segs = resolveCanonical(this.draft, canon);
-		if (segs === undefined) return;
-		const prev = structuredClone(this.getAt(segs));
-		this.removeAt(segs);
-		log.push({ op: 'remove', segs, prev });
-	}
-
-	private revertInsert(canon: Seg[], value: JsonValue, log: Array<{ op: 'set' | 'remove' | 'insert'; segs: (string | number)[]; prev?: any }>): void {
-		const seg = canon[canon.length - 1] as IdentitySeg;
-		const parentDraft = resolveCanonical(this.draft, canon.slice(0, -1));
-		if (parentDraft === undefined) return;
-		const draftArr = this.getAt(parentDraft);
-		if (!Array.isArray(draftArr)) return;
-		const parentBase = resolveCanonical(this.base, canon.slice(0, -1));
-		const baseArr = parentBase === undefined ? undefined : this.getAt(parentBase, this.base);
-		const idx = Array.isArray(baseArr) ? ghostInsertIndex(baseArr, draftArr, seg) : draftArr.length;
-		const segs = [...parentDraft, idx];
-		this.insertAt(segs, structuredClone(value));
-		log.push({ op: 'insert', segs });
 	}
 
 	// Returns the net difference between base and draft as a flat list of
@@ -610,7 +605,7 @@ export class Engine<T extends JsonValue = JsonValue> {
 			// out as $['region']) while the pattern stays document-rooted so
 			// nested x-keys keep resolving.
 			const ops: DiffOp[] = [];
-			this.diffNode(aMap.get(id)!, item, [], `${pattern}[*]`, ops);
+			this.diffNode(aMap.get(id)!, item, [], patternElement(pattern), ops);
 			if (ops.length === 0) entries.push({ identity: id, path: pathOf(id), value: item });
 			else entries.push({ identity: id, path: pathOf(id), op: OpType.Replace, value: item, changes: ops });
 		}
@@ -800,7 +795,7 @@ export class Engine<T extends JsonValue = JsonValue> {
 			if (!aMap.has(id)) ops.push({ op: OpType.Add, path: segsToPath([...segs, { key, value: id }]), value: item, identity: id });
 
 		for (const [id, bItem] of bMap)
-			if (aMap.has(id)) this.diffNode(aMap.get(id)!, bItem, [...segs, { key, value: id }], `${pattern}[*]`, ops, id);
+			if (aMap.has(id)) this.diffNode(aMap.get(id)!, bItem, [...segs, { key, value: id }], patternElement(pattern), ops, id);
 	}
 
 	// Builds identity → item for one side of a keyed array, enforcing the
@@ -878,7 +873,7 @@ export class Engine<T extends JsonValue = JsonValue> {
 				const child = [...segs, i];
 				if (i >= a.length) ops.push({ op: OpType.Add, path: segsToPath(child), value: b[i], ...(identity !== undefined && { identity }) });
 				else if (i >= b.length) ops.push({ op: OpType.Remove, path: segsToPath(child), value: a[i], ...(identity !== undefined && { identity }) });
-				else this.diffNode(a[i], b[i], child, `${pattern}[*]`, ops, identity);
+				else this.diffNode(a[i], b[i], child, patternElement(pattern), ops, identity);
 			}
 		} else if (isPlainObject(a) && isPlainObject(b)) {
 			const ao = a as Record<string, JsonValue>;
@@ -888,7 +883,7 @@ export class Engine<T extends JsonValue = JsonValue> {
 				const child = [...segs, key];
 				if (!(key in ao)) ops.push({ op: OpType.Add, path: segsToPath(child), value: bo[key], ...(identity !== undefined && { identity }) });
 				else if (!(key in bo)) ops.push({ op: OpType.Remove, path: segsToPath(child), value: ao[key], ...(identity !== undefined && { identity }) });
-				else this.diffNode(ao[key], bo[key], child, `${pattern}['${key}']`, ops, identity);
+				else this.diffNode(ao[key], bo[key], child, patternChild(pattern, key), ops, identity);
 			}
 		} else if (a !== b) {
 			// Covers: same-type primitives with different values, and type changes

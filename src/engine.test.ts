@@ -1804,6 +1804,17 @@ describe('Engine.revert — keyed arrays', () => {
 		expect(e.draft.users[2].region).toBe('eu');
 	});
 
+	it('reverts a mixed add+remove in one call: removal dropped, ghost re-inserted in place', () => {
+		const e = makeUsers();
+		e.delete("$.users[?@.email == 'b@x.com']");
+		e.add('$.users[1]', { email: 'x@x.com', region: 'ap' });
+		// draft: [a, x, c] — revert everything in one wildcard call
+		e.revert('$.users[*]');
+		expect(e.draft.users).toEqual(e.base.users);
+		e.undo();
+		expect(e.draft.users.map((u: any) => u.email)).toEqual(['a@x.com', 'x@x.com', 'c@x.com']);
+	});
+
 	it('reverting two removed elements in one call re-inserts both in base order', () => {
 		const e = makeUsers();
 		e.delete("$.users[?@.email == 'a@x.com']");

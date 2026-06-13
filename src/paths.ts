@@ -65,14 +65,23 @@ export function segsToPath(segs: Seg[]): string {
 	return out;
 }
 
-// Pattern form for x-key map lookups: any array position (index or identity)
-// becomes [*], matching the shape the schema walker builds. Built from
-// segments, never by rewriting path strings — a property literally named
-// "x[0]" can't fool it.
+// The two appenders for the keyMap pattern micro-format: any array position
+// (index or identity) is [*], object keys are ['name']. Every builder of
+// pattern strings — the schema walker, the diff walk, canonicalization —
+// goes through these so the format cannot drift between sites.
+export function patternChild(pattern: string, key: string): string {
+	return `${pattern}['${key}']`;
+}
+export function patternElement(pattern: string): string {
+	return `${pattern}[*]`;
+}
+
+// Pattern form of a parsed segment list. Built from segments, never by
+// rewriting path strings — a property literally named "x[0]" can't fool it.
 export function segmentsToPattern(segments: (string | number)[]): string {
 	let out = '$';
 	for (const seg of segments) {
-		out += typeof seg === 'number' ? '[*]' : `['${seg}']`;
+		out = typeof seg === 'number' ? patternElement(out) : patternChild(out, seg);
 	}
 	return out;
 }
@@ -119,10 +128,10 @@ export function canonicalizeSegs(
 			if (key === '$self') out.push({ key: null, value: item });
 			else if (key !== undefined && isPlainObject(item) && item[key] !== undefined) out.push({ key, value: item[key] });
 			else out.push(seg);
-			pattern += '[*]';
+			pattern = patternElement(pattern);
 		} else {
 			out.push(seg);
-			pattern += `['${seg}']`;
+			pattern = patternChild(pattern, seg);
 		}
 		cur = cur === null || cur === undefined ? undefined : cur[seg];
 	}
@@ -159,18 +168,23 @@ export function resolveCanonical(doc: JsonValue, segs: Seg[]): (string | number)
 	return out;
 }
 
+// Reads the identity of an array element under a given identity segment's
+// key ($self: the item is its own identity).
+export function identityOf(item: JsonValue, seg: IdentitySeg): JsonValue | undefined {
+	return seg.key === null ? item : isPlainObject(item) ? item[seg.key] : undefined;
+}
+
 // Where a reverted removal re-inserts: directly after the nearest preceding
-// base neighbor that still exists in draft (or at 0 when none survive), so an
+// base neighbor that survives in `sequence` — the identity sequence the
+// draft array will have at insertion time — or at 0 when none survive, so an
 // un-deleted element comes back next to the elements it lived beside instead
 // of teleporting to the end of the list.
-export function ghostInsertIndex(baseArr: JsonValue[], draftArr: JsonValue[], seg: IdentitySeg): number {
-	const identityOf = (item: JsonValue): JsonValue | undefined =>
-		seg.key === null ? item : isPlainObject(item) ? item[seg.key] : undefined;
-	const baseIdx = baseArr.findIndex(item => identityOf(item) === seg.value);
+export function ghostInsertIndex(baseArr: JsonValue[], sequence: Array<JsonValue | undefined>, seg: IdentitySeg): number {
+	const baseIdx = baseArr.findIndex(item => identityOf(item, seg) === seg.value);
 	for (let i = baseIdx - 1; i >= 0; i--) {
-		const neighborId = identityOf(baseArr[i]);
-		const draftIdx = draftArr.findIndex(item => identityOf(item) === neighborId);
-		if (draftIdx !== -1) return draftIdx + 1;
+		const neighborId = identityOf(baseArr[i], seg);
+		const seqIdx = neighborId === undefined ? -1 : sequence.indexOf(neighborId);
+		if (seqIdx !== -1) return seqIdx + 1;
 	}
 	return 0;
 }
