@@ -285,6 +285,22 @@ Never an index, so it can't go stale when the array is spliced. Draft items come
 
 The identity key comes from the schema's `x-key`, or inline: `engine.items('$.users', { key: 'email' })`. `x-key: '$self'` arrays work too — set semantics, so entries are only ever unchanged / `add` / `remove`.
 
+#### Own vs descendant changes (recursive shapes)
+
+When items have the same keyed shape as their container — a tree of nodes whose `children` array is also keyed — a `replace` entry carries two flags so a tree UI can tell a node that was *itself* edited from one that merely *contains* edited descendants:
+
+- `selfChanged` — at least one change is on this item's own field.
+- `descendantsChanged` — at least one change descends into a nested keyed element.
+
+Both can be true. A change to a `$self` set field counts as `descendantsChanged` (a `$self` set is itself a keyed array).
+
+```ts
+// node edited its own title only      → { selfChanged: true,  descendantsChanged: false }
+// node only contains an edited child   → { selfChanged: false, descendantsChanged: true  }
+```
+
+The flags are a convenience over `changes` — `descendantsChanged` is exactly `entry.changes?.some(c => c.identity !== undefined)` — surfaced as fields so the classification lives in one place.
+
 ## Scoped lenses
 
 `getNodeEngine(path)` returns a `NodeEngine` — a lens onto a subtree. It owns no state; reads resolve through the parent on every access and writes forward to the parent with paths rewritten. **Both sides see the same physical state.**
@@ -429,6 +445,8 @@ type ItemEntry<V = JsonValue> = {
   op?: 'add' | 'remove' | 'replace';      // absent = unchanged
   value: V;                               // draft item — base item when op is 'remove'
   changes?: DiffOp[];                     // only on 'replace'; paths relative to the item
+  selfChanged?: boolean;                  // only on 'replace'; an own field changed
+  descendantsChanged?: boolean;           // only on 'replace'; a nested keyed element changed
 }
 ```
 

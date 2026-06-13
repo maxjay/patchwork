@@ -1531,6 +1531,8 @@ describe('Engine.items', () => {
 				op: 'replace',
 				value: { email: 'c@x.com', region: 'eu' },
 				changes: [{ op: 'replace', path: "$['region']", oldValue: 'us', value: 'eu' }],
+				selfChanged: true,
+				descendantsChanged: false,
 			},
 			{ identity: 'd@x.com', path: `$['users'][?@['email'] == "d@x.com"]`, op: 'add', value: { email: 'd@x.com', region: 'ap' } },
 			{ identity: 'b@x.com', path: `$['users'][?@['email'] == "b@x.com"]`, op: 'remove', value: { email: 'b@x.com', region: 'us' } },
@@ -1683,6 +1685,130 @@ describe('Engine.items', () => {
 		const e = new Engine<any>({ users: [{ email: tricky, region: 'us' }] }, { schema: usersSchema });
 		const [entry] = e.items('$.users');
 		expect(e.get(entry.path)).toHaveLength(1);
+	});
+});
+
+describe('Engine.items — selfChanged / descendantsChanged', () => {
+	const treeSchema = {
+		type: 'object',
+		properties: {
+			nodes: {
+				type: 'array',
+				'x-key': 'id',
+				items: {
+					type: 'object',
+					properties: {
+						children: {
+							type: 'array',
+							'x-key': 'id',
+							items: {
+								type: 'object',
+								properties: {
+									children: { type: 'array', 'x-key': 'id', items: { type: 'object' } },
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	};
+
+	const makeTree = () =>
+		new Engine<any>(
+			{
+				nodes: [
+					{
+						id: 'p', name: 'parent',
+						children: [
+							{ id: 'c1', name: 'alpha', children: [{ id: 'g1', name: 'deep' }] },
+							{ id: 'c2', name: 'beta', children: [] },
+						],
+					},
+					{ id: 'q', name: 'other', children: [] },
+				],
+			},
+			{ schema: treeSchema },
+		);
+
+	const node = (e: Engine<any>, id: string) => e.items('$.nodes').find(r => r.identity === id)!;
+
+	it('own field edit → selfChanged only', () => {
+		const e = makeTree();
+		e.replace("$.nodes[?@.id == 'p'].name", 'PARENT');
+		const p = node(e, 'p');
+		expect(p.op).toBe('replace');
+		expect(p.selfChanged).toBe(true);
+		expect(p.descendantsChanged).toBe(false);
+	});
+
+	it('child edit → descendantsChanged only on the parent', () => {
+		const e = makeTree();
+		e.replace("$.nodes[?@.id == 'p'].children[?@.id == 'c1'].name", 'ALPHA');
+		const p = node(e, 'p');
+		expect(p.op).toBe('replace');
+		expect(p.selfChanged).toBe(false);
+		expect(p.descendantsChanged).toBe(true);
+	});
+
+	it('own + child edit → both flags true', () => {
+		const e = makeTree();
+		e.replace("$.nodes[?@.id == 'p'].name", 'PARENT');
+		e.replace("$.nodes[?@.id == 'p'].children[?@.id == 'c1'].name", 'ALPHA');
+		const p = node(e, 'p');
+		expect(p.selfChanged).toBe(true);
+		expect(p.descendantsChanged).toBe(true);
+	});
+
+	it('grandchild edit → every ancestor row reads descendantsChanged only', () => {
+		const e = makeTree();
+		e.replace("$.nodes[?@.id == 'p'].children[?@.id == 'c1'].children[?@.id == 'g1'].name", 'DEEP');
+		// top level
+		const p = node(e, 'p');
+		expect(p.selfChanged).toBe(false);
+		expect(p.descendantsChanged).toBe(true);
+		// middle level, scoped to p's children
+		const c1 = e.items("$.nodes[?@.id == 'p'].children").find(r => r.identity === 'c1')!;
+		expect(c1.op).toBe('replace');
+		expect(c1.selfChanged).toBe(false);
+		expect(c1.descendantsChanged).toBe(true);
+	});
+
+	it('flags are absent on add, remove, and unchanged entries', () => {
+		const e = makeTree();
+		e.delete("$.nodes[?@.id == 'q']");
+		e.add('$.nodes[-]', { id: 'r', name: 'new', children: [] });
+		const rows = e.items('$.nodes');
+		const q = rows.find(r => r.identity === 'q')!; // remove
+		const r = rows.find(r => r.identity === 'r')!; // add
+		const p = rows.find(r => r.identity === 'p')!; // unchanged
+		for (const row of [q, r, p]) {
+			expect(row).not.toHaveProperty('selfChanged');
+			expect(row).not.toHaveProperty('descendantsChanged');
+		}
+	});
+
+	it('a $self set field on the node counts as descendantsChanged', () => {
+		const schema = {
+			type: 'object',
+			properties: {
+				nodes: {
+					type: 'array',
+					'x-key': 'id',
+					items: {
+						type: 'object',
+						properties: {
+							tags: { type: 'array', 'x-key': '$self', items: { type: 'string' } },
+						},
+					},
+				},
+			},
+		};
+		const e = new Engine<any>({ nodes: [{ id: 'p', tags: ['x'] }] }, { schema });
+		e.add('$.nodes[0].tags[-]', 'y');
+		const p = node(e, 'p');
+		expect(p.selfChanged).toBe(false);
+		expect(p.descendantsChanged).toBe(true);
 	});
 });
 
