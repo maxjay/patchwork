@@ -61,6 +61,14 @@ export type ItemEntry<V extends JsonValue = JsonValue> = {
 	// Field-level ops for Replace entries. Paths are relative to the item
 	// ($['region']), with identity filters for any nested keyed arrays.
 	changes?: DiffOp[];
+	// Replace entries only. selfChanged: at least one change is on this item's
+	// own field. descendantsChanged: at least one change descends into a nested
+	// keyed element (it carries an identity). Both can be true. Lets a tree UI
+	// tell "this node was edited" from "this node only contains edited children".
+	// Note: a change to a $self set field on the item counts as descendantsChanged
+	// (a $self set is itself a keyed array).
+	selfChanged?: boolean;
+	descendantsChanged?: boolean;
 };
 
 function rebaseDiffOp(op: DiffOp, prefix: string): DiffOp {
@@ -606,8 +614,16 @@ export class Engine<T extends JsonValue = JsonValue> {
 			// nested x-keys keep resolving.
 			const ops: DiffOp[] = [];
 			this.diffNode(aMap.get(id)!, item, [], patternElement(pattern), ops);
-			if (ops.length === 0) entries.push({ identity: id, path: pathOf(id), value: item });
-			else entries.push({ identity: id, path: pathOf(id), op: OpType.Replace, value: item, changes: ops });
+			if (ops.length === 0) {
+				entries.push({ identity: id, path: pathOf(id), value: item });
+			} else {
+				// A change carries an identity iff it descends into a nested keyed
+				// element (the item-relative diff above starts with no identity, so
+				// own-field ops have none). That splits the changes cleanly.
+				const descendantsChanged = ops.some(o => 'identity' in o && o.identity !== undefined);
+				const selfChanged = ops.some(o => !('identity' in o) || o.identity === undefined);
+				entries.push({ identity: id, path: pathOf(id), op: OpType.Replace, value: item, changes: ops, selfChanged, descendantsChanged });
+			}
 		}
 		for (const [id, item] of aMap) {
 			if (!bMap.has(id)) entries.push({ identity: id, path: pathOf(id), op: OpType.Remove, value: item });

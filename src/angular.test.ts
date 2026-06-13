@@ -304,4 +304,32 @@ describe('PatchworkStore.items', () => {
 		store.accept(); // base moves — everything back to unchanged
 		expect(items().every(x => x.op === undefined)).toBe(true);
 	});
+
+	it('carries selfChanged / descendantsChanged through the signal', () => {
+		const store = createPatchworkStore<any>(
+			{ nodes: [{ id: 'p', name: 'parent', children: [{ id: 'c1', name: 'a' }] }] },
+			{
+				schema: {
+					type: 'object',
+					properties: {
+						nodes: {
+							type: 'array',
+							'x-key': 'id',
+							items: {
+								type: 'object',
+								properties: {
+									children: { type: 'array', 'x-key': 'id', items: { type: 'object' } },
+								},
+							},
+						},
+					},
+				},
+			},
+		);
+		const nodes = store.items('$.nodes');
+		store.replace("$.nodes[?@.id == 'p'].children[?@.id == 'c1'].name", 'A');
+		const p = nodes().find(r => r.identity === 'p')!;
+		expect(p.selfChanged).toBe(false);
+		expect(p.descendantsChanged).toBe(true);
+	});
 });

@@ -72,6 +72,8 @@ const store = fromEngine(engine);
 
 `items` is the read model for list UIs over keyed arrays: every entry has a stable `identity` (use it for `track`), an engine-built `path` (pass it to mutations), an op label (`add` / `remove` / `replace`, absent when unchanged), and the item `value` — base value for removed ghosts. See the README's `items()` section for the entry shape.
 
+For recursive/tree shapes, `replace` entries also carry `selfChanged` and `descendantsChanged` so a row can distinguish "this node was edited" (`[class.edited]="row.selfChanged"`) from "this node only contains edited children" (`[class.has-edits]="row.descendantsChanged"`).
+
 ```ts
 @Component({
   template: `
