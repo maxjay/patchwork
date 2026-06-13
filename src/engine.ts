@@ -1,9 +1,18 @@
 import { paths, type JsonValue } from 'jsonpath-rfc9535';
 import parse from 'jsonpath-rfc9535/parser';
-
-function isPlainObject(v: JsonValue): v is Record<string, JsonValue> {
-	return v !== null && typeof v === 'object' && !Array.isArray(v);
-}
+import {
+	type IdentitySeg,
+	type Seg,
+	canonicalizeSegs,
+	ghostInsertIndex,
+	isPlainObject,
+	isUnderPrefix,
+	joinPath,
+	rebasePath,
+	resolveCanonical,
+	segmentsToPattern,
+	segsToPath,
+} from './paths.js';
 
 export enum OpType {
 	Add = 'add',
@@ -52,29 +61,6 @@ export type ItemEntry<V extends JsonValue = JsonValue> = {
 	changes?: DiffOp[];
 };
 
-// Path helpers used by NodeEngine.
-//
-// Normalized paths from paths() always end with `]` after the root token,
-// so segment boundaries are unambiguous from raw string comparison:
-//   prefix      $['cars']
-//   sibling     $['carsTrucks']   — does NOT start with prefix + '['
-//   child       $['cars'][0]      — DOES start with prefix + '['
-//   self        $['cars']         — equals prefix exactly
-
-function joinPath(prefix: string, childPath: string): string {
-	// childPath always starts with $; strip it and concat to prefix
-	return prefix + childPath.slice(1);
-}
-
-function rebasePath(fullPath: string, prefix: string): string {
-	if (fullPath === prefix) return '$';
-	return '$' + fullPath.slice(prefix.length);
-}
-
-function isUnderPrefix(fullPath: string, prefix: string): boolean {
-	return fullPath === prefix || fullPath.startsWith(prefix + '[');
-}
-
 function rebaseDiffOp(op: DiffOp, prefix: string): DiffOp {
 	// Switch (rather than if/else with spread) so TypeScript narrows the union
 	// cleanly through each branch — spreading `op` doesn't preserve narrowing.
@@ -117,84 +103,6 @@ function extractKeyMap(schema: Record<string, any>, path = '$'): Map<string, str
 			map.set(p, k);
 	}
 	return map;
-}
-
-// An identity segment addresses an element of a keyed array by its x-key
-// value instead of its position. key === null means x-key: '$self' (the item
-// is its own identity). Indexes inside keyed arrays go stale on the next
-// splice and differ between base and draft (a removed element only has a
-// position in base, an added one only in draft), so identity is the only
-// address that can leave the engine.
-type IdentitySeg = { key: string | null; value: JsonValue };
-type Seg = string | number | IdentitySeg;
-
-// Escape rules for name segments, vendored from jsonpath-rfc9535
-// (dist/esm/core/path.js, Apache-2.0) so our output is byte-compatible with
-// the library's normalized paths. The library implements this internally
-// (toNormalizedKey) but does not export it.
-// biome-ignore lint/suspicious/noControlCharactersInRegex: control chars must be escaped
-const NAME_ESCAPE_REGEX = /[\u0000-\u001f'\\]/g;
-function escapeNameChar(ch: string): string {
-	const code = ch.charCodeAt(0);
-	switch (code) {
-		case 0x8: return '\\b';
-		case 0xc: return '\\f';
-		case 0xa: return '\\n';
-		case 0xd: return '\\r';
-		case 0x9: return '\\t';
-		case 0x27: return "\\'";
-		case 0x5c: return '\\\\';
-		default: return `\\u${code.toString(16).padStart(4, '0')}`;
-	}
-}
-function escapeName(name: string): string {
-	return name.replace(NAME_ESCAPE_REGEX, escapeNameChar);
-}
-
-// The single place path strings are built. Name/index segments follow the
-// library's normalized form; identity segments serialize as RFC 9535 filter
-// selectors, e.g. [?@['email'] == "b@x.com"]. Filter paths are valid queries
-// the library evaluates natively, but formally not RFC "Normalized Paths" —
-// the RFC's output format has no way to express identity.
-// JSON.stringify covers the filter literal: RFC 9535 double-quoted string
-// escapes are JSON-compatible, and numbers/booleans/null serialize bare.
-function segsToPath(segs: Seg[]): string {
-	let out = '$';
-	for (const seg of segs) {
-		if (typeof seg === 'number') out += `[${seg}]`;
-		else if (typeof seg === 'string') out += `['${escapeName(seg)}']`;
-		else if (seg.key === null) out += `[?@ == ${JSON.stringify(seg.value)}]`;
-		else out += `[?@['${escapeName(seg.key)}'] == ${JSON.stringify(seg.value)}]`;
-	}
-	return out;
-}
-
-// Pattern form for keyMap lookups: any array position (index or identity)
-// becomes [*], matching the shape extractKeyMap builds from a schema.
-// Built from segments, never by rewriting path strings — a property literally
-// named "x[0]" can't fool it.
-function segmentsToPattern(segments: (string | number)[]): string {
-	let out = '$';
-	for (const seg of segments) {
-		out += typeof seg === 'number' ? '[*]' : `['${seg}']`;
-	}
-	return out;
-}
-
-// Where a reverted removal re-inserts: directly after the nearest preceding
-// base neighbor that still exists in draft (or at 0 when none survive), so an
-// un-deleted element comes back next to the elements it lived beside instead
-// of teleporting to the end of the list.
-function ghostInsertIndex(baseArr: JsonValue[], draftArr: JsonValue[], seg: IdentitySeg): number {
-	const identityOf = (item: JsonValue): JsonValue | undefined =>
-		seg.key === null ? item : isPlainObject(item) ? item[seg.key] : undefined;
-	const baseIdx = baseArr.findIndex(item => identityOf(item) === seg.value);
-	for (let i = baseIdx - 1; i >= 0; i--) {
-		const neighborId = identityOf(baseArr[i]);
-		const draftIdx = draftArr.findIndex(item => identityOf(item) === neighborId);
-		if (draftIdx !== -1) return draftIdx + 1;
-	}
-	return 0;
 }
 
 // In-place write at a non-root path against any target object. Used by
@@ -481,11 +389,11 @@ export class Engine<T extends JsonValue = JsonValue> {
 	revert(jsonPath: string): void {
 		const targets = new Map<string, Seg[]>();
 		for (const p of paths(this.draft, jsonPath)) {
-			const canon = this.canonicalizeSegs(this.segmentsFrom(p), this.draft);
+			const canon = canonicalizeSegs(this.draft, this.keyMap, this.segmentsFrom(p));
 			targets.set(segsToPath(canon), canon);
 		}
 		for (const p of paths(this.base, jsonPath)) {
-			const canon = this.canonicalizeSegs(this.segmentsFrom(p), this.base);
+			const canon = canonicalizeSegs(this.base, this.keyMap, this.segmentsFrom(p));
 			targets.set(segsToPath(canon), canon);
 		}
 
@@ -502,14 +410,14 @@ export class Engine<T extends JsonValue = JsonValue> {
 		const actions: Action[] = [];
 		const inserts: Action[] = [];
 		for (const canon of targets.values()) {
-			const baseSegs = this.resolveCanonical(this.base, canon);
+			const baseSegs = resolveCanonical(this.base, canon);
 			if (baseSegs === undefined) {
-				if (this.resolveCanonical(this.draft, canon) !== undefined) actions.push({ kind: 'remove', canon });
+				if (resolveCanonical(this.draft, canon) !== undefined) actions.push({ kind: 'remove', canon });
 				continue;
 			}
 			const value = structuredClone(this.getAt(baseSegs, this.base));
 			const last = canon[canon.length - 1];
-			if (typeof last === 'object' && this.resolveCanonical(this.draft, canon) === undefined) {
+			if (typeof last === 'object' && resolveCanonical(this.draft, canon) === undefined) {
 				inserts.push({ kind: 'insert', canon, value, baseIndex: baseSegs[baseSegs.length - 1] as number });
 			} else {
 				actions.push({ kind: 'set', canon, value });
@@ -554,14 +462,14 @@ export class Engine<T extends JsonValue = JsonValue> {
 	}
 
 	private revertSet(canon: Seg[], value: JsonValue, log: Array<{ op: 'set' | 'remove' | 'insert'; segs: (string | number)[]; prev?: any }>): void {
-		let segs = this.resolveCanonical(this.draft, canon);
+		let segs = resolveCanonical(this.draft, canon);
 		if (segs === undefined) {
 			// A deleted field under a surviving node: resolve the longest prefix
 			// that still exists in draft and create the remainder literally. If
 			// the remainder crosses an identity segment, the keyed element itself
 			// is gone — reverting the element is the right tool — so skip.
 			for (let i = canon.length - 1; i >= 0 && segs === undefined; i--) {
-				const prefix = this.resolveCanonical(this.draft, canon.slice(0, i));
+				const prefix = resolveCanonical(this.draft, canon.slice(0, i));
 				if (prefix !== undefined) {
 					const rest = canon.slice(i);
 					if (rest.some(s => typeof s === 'object')) return;
@@ -576,7 +484,7 @@ export class Engine<T extends JsonValue = JsonValue> {
 	}
 
 	private revertRemove(canon: Seg[], log: Array<{ op: 'set' | 'remove' | 'insert'; segs: (string | number)[]; prev?: any }>): void {
-		const segs = this.resolveCanonical(this.draft, canon);
+		const segs = resolveCanonical(this.draft, canon);
 		if (segs === undefined) return;
 		const prev = structuredClone(this.getAt(segs));
 		this.removeAt(segs);
@@ -585,11 +493,11 @@ export class Engine<T extends JsonValue = JsonValue> {
 
 	private revertInsert(canon: Seg[], value: JsonValue, log: Array<{ op: 'set' | 'remove' | 'insert'; segs: (string | number)[]; prev?: any }>): void {
 		const seg = canon[canon.length - 1] as IdentitySeg;
-		const parentDraft = this.resolveCanonical(this.draft, canon.slice(0, -1));
+		const parentDraft = resolveCanonical(this.draft, canon.slice(0, -1));
 		if (parentDraft === undefined) return;
 		const draftArr = this.getAt(parentDraft);
 		if (!Array.isArray(draftArr)) return;
-		const parentBase = this.resolveCanonical(this.base, canon.slice(0, -1));
+		const parentBase = resolveCanonical(this.base, canon.slice(0, -1));
 		const baseArr = parentBase === undefined ? undefined : this.getAt(parentBase, this.base);
 		const idx = Array.isArray(baseArr) ? ghostInsertIndex(baseArr, draftArr, seg) : draftArr.length;
 		const segs = [...parentDraft, idx];
@@ -646,58 +554,7 @@ export class Engine<T extends JsonValue = JsonValue> {
 	// the element in `doc`. Object keys and unkeyed indexes pass through.
 	/** @internal */
 	canonicalizePath(concretePath: string, doc: JsonValue): string {
-		return segsToPath(this.canonicalizeSegs(this.segmentsFrom(concretePath), doc));
-	}
-
-	private canonicalizeSegs(segments: (string | number)[], doc: JsonValue): Seg[] {
-		const out: Seg[] = [];
-		let pattern = '$';
-		let cur: any = doc;
-		for (const seg of segments) {
-			if (typeof seg === 'number') {
-				const key = Array.isArray(cur) ? this.keyMap.get(pattern) : undefined;
-				const item = Array.isArray(cur) ? cur[seg] : undefined;
-				if (key === '$self') out.push({ key: null, value: item });
-				else if (key !== undefined && isPlainObject(item) && item[key] !== undefined) out.push({ key, value: item[key] });
-				else out.push(seg);
-				pattern += '[*]';
-			} else {
-				out.push(seg);
-				pattern += `['${seg}']`;
-			}
-			cur = cur === null || cur === undefined ? undefined : cur[seg];
-		}
-		return out;
-	}
-
-	// Inverse of canonicalizeSegs: resolves a canonical segment list against a
-	// document, mapping identity segments back to concrete indexes by scanning
-	// the array for the matching key value. Returns undefined when any hop is
-	// missing. Resolution is always fresh — never cached across mutations.
-	private resolveCanonical(doc: JsonValue, segs: Seg[]): (string | number)[] | undefined {
-		const out: (string | number)[] = [];
-		let cur: any = doc;
-		for (const seg of segs) {
-			if (cur === null || typeof cur !== 'object') return undefined;
-			if (typeof seg === 'object') {
-				if (!Array.isArray(cur)) return undefined;
-				const idx = cur.findIndex((item: any) =>
-					seg.key === null ? item === seg.value : isPlainObject(item) && item[seg.key] === seg.value,
-				);
-				if (idx === -1) return undefined;
-				out.push(idx);
-				cur = cur[idx];
-			} else if (typeof seg === 'number') {
-				if (!Array.isArray(cur) || seg < 0 || seg >= cur.length) return undefined;
-				out.push(seg);
-				cur = cur[seg];
-			} else {
-				if (Array.isArray(cur) || !Object.prototype.hasOwnProperty.call(cur, seg)) return undefined;
-				out.push(seg);
-				cur = cur[seg];
-			}
-		}
-		return out;
+		return segsToPath(canonicalizeSegs(doc, this.keyMap, this.segmentsFrom(concretePath)));
 	}
 
 	// Merged identity view of a keyed array — the read model a list UI needs.
@@ -735,7 +592,7 @@ export class Engine<T extends JsonValue = JsonValue> {
 		// Entry paths are canonical: the prefix up to the array is canonicalized
 		// against the side the array resolved on, then the element's identity
 		// segment is appended — same serializer, same dialect as diff() output.
-		const canonSegs = this.canonicalizeSegs(segs, Array.isArray(draftVal) ? this.draft : this.base);
+		const canonSegs = canonicalizeSegs(Array.isArray(draftVal) ? this.draft : this.base, this.keyMap, segs);
 
 		if (key === '$self') return this.itemsBySelf(a, b, canonSegs) as ItemEntry<V>[];
 
