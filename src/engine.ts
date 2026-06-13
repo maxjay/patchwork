@@ -467,7 +467,7 @@ export class Engine<T extends JsonValue = JsonValue> {
 					.map(r => r.segments[segments.length] as number));
 				const sequence = draftArr
 					.filter((_, i) => !removedIdx.has(i))
-					.map(item => identityOf(item, seg));
+					.map(item => identityOf(item, seg.key));
 				arr = { segments, sequence };
 				arrays.set(parentKey, arr);
 			}
@@ -805,7 +805,7 @@ export class Engine<T extends JsonValue = JsonValue> {
 	private buildIdentityMap(arr: JsonValue[], key: string, segs: Seg[]): Map<JsonValue, JsonValue> {
 		const map = new Map<JsonValue, JsonValue>();
 		for (const item of arr) {
-			const id = isPlainObject(item) ? item[key] : undefined;
+			const id = identityOf(item, key);
 			if (id === undefined || (id !== null && typeof id === 'object')) {
 				throw new Error(
 					`diff: item in keyed array at ${segsToPath(segs)} has no primitive '${key}' identity`

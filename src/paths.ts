@@ -124,10 +124,15 @@ export function canonicalizeSegs(
 	for (const seg of segments) {
 		if (typeof seg === 'number') {
 			const key = Array.isArray(cur) ? keyMap.get(pattern) : undefined;
-			const item = Array.isArray(cur) ? cur[seg] : undefined;
-			if (key === '$self') out.push({ key: null, value: item });
-			else if (key !== undefined && isPlainObject(item) && item[key] !== undefined) out.push({ key, value: item[key] });
-			else out.push(seg);
+			if (key === '$self') {
+				out.push({ key: null, value: cur[seg] });
+			} else if (key !== undefined) {
+				const id = identityOf(cur[seg], key);
+				if (id !== undefined) out.push({ key, value: id });
+				else out.push(seg);
+			} else {
+				out.push(seg);
+			}
 			pattern = patternElement(pattern);
 		} else {
 			out.push(seg);
@@ -149,9 +154,7 @@ export function resolveCanonical(doc: JsonValue, segs: Seg[]): (string | number)
 		if (cur === null || typeof cur !== 'object') return undefined;
 		if (typeof seg === 'object') {
 			if (!Array.isArray(cur)) return undefined;
-			const idx = cur.findIndex((item: any) =>
-				seg.key === null ? item === seg.value : isPlainObject(item) && item[seg.key] === seg.value,
-			);
+			const idx = findByIdentity(cur, seg);
 			if (idx === -1) return undefined;
 			out.push(idx);
 			cur = cur[idx];
@@ -168,10 +171,16 @@ export function resolveCanonical(doc: JsonValue, segs: Seg[]): (string | number)
 	return out;
 }
 
-// Reads the identity of an array element under a given identity segment's
-// key ($self: the item is its own identity).
-export function identityOf(item: JsonValue, seg: IdentitySeg): JsonValue | undefined {
-	return seg.key === null ? item : isPlainObject(item) ? item[seg.key] : undefined;
+// Reads the identity of an array element under a key (null = $self: the
+// item is its own identity). The single definition of what "identity" means
+// for an element — every matcher in the codebase goes through this.
+export function identityOf(item: JsonValue, key: string | null): JsonValue | undefined {
+	return key === null ? item : isPlainObject(item) ? item[key] : undefined;
+}
+
+// Index of the element matching an identity segment, or -1.
+export function findByIdentity(arr: JsonValue[], seg: IdentitySeg): number {
+	return arr.findIndex(item => identityOf(item, seg.key) === seg.value);
 }
 
 // Where a reverted removal re-inserts: directly after the nearest preceding
@@ -180,9 +189,9 @@ export function identityOf(item: JsonValue, seg: IdentitySeg): JsonValue | undef
 // un-deleted element comes back next to the elements it lived beside instead
 // of teleporting to the end of the list.
 export function ghostInsertIndex(baseArr: JsonValue[], sequence: Array<JsonValue | undefined>, seg: IdentitySeg): number {
-	const baseIdx = baseArr.findIndex(item => identityOf(item, seg) === seg.value);
+	const baseIdx = findByIdentity(baseArr, seg);
 	for (let i = baseIdx - 1; i >= 0; i--) {
-		const neighborId = identityOf(baseArr[i], seg);
+		const neighborId = identityOf(baseArr[i], seg.key);
 		const seqIdx = neighborId === undefined ? -1 : sequence.indexOf(neighborId);
 		if (seqIdx !== -1) return seqIdx + 1;
 	}
