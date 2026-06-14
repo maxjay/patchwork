@@ -4,31 +4,20 @@ export default defineConfig({
   title: 'patchwork',
   description: 'A JSON editing engine with base/draft, diff, undo, and scoped lenses.',
   base: '/patchwork/',
-  head: [['link', { rel: 'icon', href: '/patchwork/favicon.ico' }]],
 
   themeConfig: {
     nav: [
-      { text: 'Guide', link: '/guide' },
+      { text: 'Guide', link: '/' },
       { text: 'Arrays', link: '/arrays' },
       { text: 'API', link: '/api' },
       { text: 'Playground', link: '/playground' },
     ],
 
     sidebar: [
-      {
-        text: 'Introduction',
-        items: [
-          { text: 'Getting started', link: '/guide' },
-          { text: 'Array diffing', link: '/arrays' },
-        ],
-      },
-      {
-        text: 'Reference',
-        items: [
-          { text: 'API', link: '/api' },
-          { text: 'Playground', link: '/playground' },
-        ],
-      },
+      { text: 'Guide', link: '/' },
+      { text: 'Array diffing', link: '/arrays' },
+      { text: 'API reference', link: '/api' },
+      { text: 'Playground', link: '/playground' },
     ],
 
     socialLinks: [
@@ -40,13 +29,5 @@ export default defineConfig({
     },
 
     search: { provider: 'local' },
-  },
-
-  vite: {
-    resolve: {
-      alias: {
-        '@engine': '../src/engine.ts',
-      },
-    },
   },
 })

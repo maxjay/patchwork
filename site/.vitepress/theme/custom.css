@@ -3,6 +3,7 @@
   --vp-c-brand-2: #6355e0;
   --vp-c-brand-3: #5044c9;
   --vp-c-brand-soft: rgba(124, 106, 247, 0.14);
+  --playground-height: clamp(420px, 60vh, 680px);
 }
 
 .playground-wrap {
@@ -15,8 +16,8 @@
 .playground-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 14px;
+  gap: 10px;
+  padding: 8px 12px;
   background: var(--vp-c-bg-soft);
   border-bottom: 1px solid var(--vp-c-divider);
   flex-wrap: wrap;
@@ -32,60 +33,65 @@
   cursor: pointer;
 }
 
-.playground-header button {
-  font-size: 13px;
-  padding: 4px 14px;
-  border-radius: 4px;
-  border: none;
-  background: var(--vp-c-brand-1);
-  color: #fff;
-  cursor: pointer;
-  font-weight: 500;
+.playground-status {
+  font-size: 12px;
+  color: var(--vp-c-text-3);
+  font-family: var(--vp-font-family-mono);
+  margin-left: auto;
 }
 
-.playground-header button:hover {
-  background: var(--vp-c-brand-2);
+.playground-error-inline {
+  color: var(--vp-c-danger-1);
+  font-size: 12px;
+  font-family: var(--vp-font-family-mono);
 }
 
 .playground-body {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  min-height: 340px;
+  height: var(--playground-height);
 }
 
 @media (max-width: 768px) {
-  .playground-body { grid-template-columns: 1fr; }
+  .playground-body {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
 }
 
 .playground-editor {
   border-right: 1px solid var(--vp-c-divider);
+  overflow: hidden;
+  height: 100%;
 }
 
-.playground-editor textarea {
-  width: 100%;
-  height: 340px;
-  padding: 16px;
-  font-family: var(--vp-font-family-mono);
-  font-size: 13px;
-  line-height: 1.6;
-  border: none;
-  background: var(--vp-c-bg);
-  color: var(--vp-c-text-1);
-  resize: none;
+/* Make CodeMirror fill the container */
+.playground-editor .cm-editor {
+  height: 100%;
+}
+
+.playground-editor .cm-editor.cm-focused {
   outline: none;
-  box-sizing: border-box;
 }
 
 .playground-output {
   display: flex;
   flex-direction: column;
+  height: 100%;
   overflow: hidden;
+}
+
+.playground-output.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .playground-pane {
   flex: 1;
   border-bottom: 1px solid var(--vp-c-divider);
   overflow: auto;
+  min-height: 0;
 }
 
 .playground-pane:last-child {
@@ -99,11 +105,14 @@
   text-transform: uppercase;
   color: var(--vp-c-text-3);
   padding: 6px 12px 0;
+  position: sticky;
+  top: 0;
+  background: var(--vp-c-bg);
 }
 
 .playground-pane pre {
   margin: 0;
-  padding: 6px 12px 10px;
+  padding: 4px 12px 10px;
   font-family: var(--vp-font-family-mono);
   font-size: 12px;
   line-height: 1.5;
@@ -112,9 +121,10 @@
   word-break: break-all;
 }
 
-.playground-error {
-  padding: 12px 16px;
-  color: var(--vp-c-danger-1);
-  font-family: var(--vp-font-family-mono);
-  font-size: 13px;
+.playground-empty {
+  text-align: center;
+  color: var(--vp-c-text-3);
+  font-size: 14px;
+  line-height: 1.8;
+  padding: 24px;
 }

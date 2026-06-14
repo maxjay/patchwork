@@ -1,8 +1,12 @@
-# Array diffing
+# Arrays
 
-## The default: index-zip
+Before patchwork can tell you what changed in an array, it needs to answer a harder question: **what does it mean for an array element to change?**
 
-Without a declared identity, patchwork diffs arrays position-by-position. This is correct for fixed-position arrays (tuples, coordinate pairs, config slots) but wrong for most everything else.
+The answer depends entirely on what your array is.
+
+## The problem with position
+
+The simplest diff strategy is to compare elements by position. Element 0 in base against element 0 in draft, element 1 against element 1, and so on.
 
 ```ts
 const engine = new Engine({ items: ['A', 'B', 'C'] })
@@ -16,28 +20,32 @@ engine.diff()
 // ]
 ```
 
-One delete produced three ops — a cascade of false replaces. Everything after the deleted element looks like it changed.
+One element was deleted. The diff says three things changed. It is not wrong: positions 0 and 1 did get new values. But B and C did not change. They moved. The diff is reporting the consequence of the removal rather than the removal itself.
 
----
+For a tuple or a fixed-position config array this is correct. Position is the identity. Slot 0 means something specific and independent of what is in it.
 
-## x-key: identity matching
+For almost everything else, a list of users, a set of tags, a pipeline of steps, this is the wrong model.
 
-Declare `x-key` on an array schema and patchwork matches elements across `base` and `draft` by that field. One delete produces one `remove` op, regardless of what follows it.
+## What makes an element the same element?
+
+To diff an array correctly you need to know: when an element moves, is it still the same element? When you look at two snapshots of an array, which elements in draft correspond to which elements in base?
+
+For objects with a stable ID field the answer is clear. `{ id: 2, name: 'Bob' }` in draft is the same element as `{ id: 2, name: 'Bob' }` in base, regardless of where in the array it sits. You declare this with `x-key`:
 
 ```ts
 const engine = new Engine(
   {
-    regions: [
-      { id: 'us-east', capacity: 100 },
-      { id: 'eu-west', capacity: 80  },
-      { id: 'ap-south', capacity: 60 },
+    users: [
+      { id: 1, name: 'Alice' },
+      { id: 2, name: 'Bob'   },
+      { id: 3, name: 'Carol' },
     ],
   },
   {
     schema: {
       type: 'object',
       properties: {
-        regions: {
+        users: {
           type: 'array',
           'x-key': 'id',
           items: { type: 'object' },
@@ -47,77 +55,69 @@ const engine = new Engine(
   },
 )
 
-engine.delete('$.regions[0]')
+engine.delete('$.users[1]')
 
 engine.diff()
 // [
-//   { op: 'remove', path: "$['regions'][0]", value: { id: 'us-east', ... }, identity: 'us-east' }
+//   { op: 'remove', path: "$['users'][1]", value: { id: 2, name: 'Bob' }, identity: 2 }
 // ]
-// one op — not a cascade
+// one op. Alice and Carol are untouched.
 ```
 
-`identity` on the `DiffOp` carries the matched key value directly. Consumers don't need schema knowledge to identify what was added or removed.
+With `x-key: 'id'`, patchwork matches elements across snapshots by identity, not position. One deletion produces one `remove` op.
 
-For a one-off without a schema:
-
-```ts
-engine.diff('$.regions', { key: 'id' })
-```
-
-### Field changes: element-level replace
-
-When a matched element's fields change, patchwork emits a `replace` op at the **element level** — not at each field individually. The field-level diffs are grouped inside `changes`.
+Field changes on a matched element produce a single `replace` op at the element level. The individual field diffs are nested inside `changes`:
 
 ```ts
-engine.replace('$.regions[0].capacity', 90)
+engine.replace('$.users[0].name', 'Alice (admin)')
 
 engine.diff()
 // [
 //   {
 //     op: 'replace',
-//     path: "$['regions'][0]",
-//     identity: 'eu-west',
+//     path: "$['users'][0]",
+//     identity: 1,
+//     value:    { id: 1, name: 'Alice (admin)' },
+//     oldValue: { id: 1, name: 'Alice'         },
 //     displacement: 0,
-//     value:    { id: 'eu-west', capacity: 90 },
-//     oldValue: { id: 'eu-west', capacity: 80 },
 //     changes: [
-//       { op: 'replace', path: "$['regions'][0]['capacity']", oldValue: 80, value: 90 }
+//       { op: 'replace', path: "$['users'][0]['name']", oldValue: 'Alice', value: 'Alice (admin)' }
 //     ]
 //   }
 // ]
 ```
 
-**`changes`** paths are absolute document paths — you can pass them directly to `restore()` for sub-field reversion.
+The element is the unit. Its internal changes are grouped under it.
 
-### Nesting and cascade
+### Identity is declared, not inferred
 
-`x-key` nests: arrays inside arrays can each declare their own key. By default, a change inside a nested keyed array **bubbles up** — the parent element is marked `modified`, and the nested change appears in its `changes` array.
+`x-key` must be declared explicitly. patchwork does not attempt to guess which field is the identity.
+
+The reason: identity must be the part of an element that does not change when you edit everything else. If patchwork guessed wrong and you later edited that field, it would misidentify the element. Structural or whole-value identity breaks the instant you edit. An edit would look like a remove and an add.
+
+If the `x-key` field itself changes, patchwork treats it as a remove of the original element and an add of a new one. That is the correct interpretation. A different identity is a different element.
+
+## Does position matter?
+
+So far we have talked about membership: which elements exist. There is a second question: does the order of elements matter?
+
+For some arrays it does not. A list of user permissions, a set of tags, a collection of config objects keyed by ID. These are bags. You care about what is in them, not the order they are in. Removing element B and shifting C from index 2 to index 1 is irrelevant. C did not change.
+
+For other arrays, order is the whole point. A pipeline of steps, a playlist, a ranked list. Position is meaningful. If C shifts from index 2 to index 1, something real happened: C is now in a different slot in the sequence.
+
+patchwork needs to know which you mean. You declare it with `x-ordered`:
 
 ```ts
-// parent array x-key: 'gid', items contain a members array x-key: 'uid'
-engine.delete('$.groups[0].members[0]')
+// unordered (default): position shifts are invisible
+{ type: 'array', 'x-key': 'id' }
 
-engine.diff()
-// [
-//   {
-//     op: 'replace', path: "$['groups'][0]", identity: 'g1',
-//     changes: [{ op: 'remove', path: "$['groups'][0]['members'][0]", identity: 'u1', ... }]
-//   }
-// ]
+// ordered: position shifts are surfaced
+{ type: 'array', 'x-key': 'id', 'x-ordered': true }
 ```
 
-Pass `cascade: false` to contain changes within their own identity boundary — a nested change will not mark the parent as modified:
+## Displacement in ordered arrays
 
-```ts
-engine.diff(undefined, { cascade: false })
-// [] — parent is unchanged from its own perspective
-```
-
----
-
-## x-ordered: ordered sequences
-
-Add `x-ordered: true` to declare that position is meaningful. When an element's index shifts because something was added or removed nearby, patchwork surfaces that as a **`move` op** — a displacement.
+When an array is ordered and an element's position changes because something was added or removed near it, that shift is real and patchwork surfaces it. We call this displacement.
 
 ```ts
 const engine = new Engine(
@@ -132,127 +132,93 @@ const engine = new Engine(
     schema: {
       type: 'object',
       properties: {
-        steps: {
-          type: 'array',
-          'x-key': 'id',
-          'x-ordered': true,
-          items: { type: 'object' },
-        },
+        steps: { type: 'array', 'x-key': 'id', 'x-ordered': true, items: { type: 'object' } },
       },
     },
   },
 )
 
-engine.delete('$.steps[1]')  // remove 'Validate'
+engine.delete('$.steps[1]')
 
 engine.diff()
 // [
-//   { op: 'remove', from: "$['steps'][1]", identity: 'b' },
-//   { op: 'move',   from: "$['steps'][2]", to: "$['steps'][1]", identity: 'c' }
+//   { op: 'remove', ..., identity: 'b' },
+//   { op: 'move', from: "$['steps'][2]", to: "$['steps'][1]", identity: 'c' }
 // ]
 ```
 
-`c` (Transform) moved from index 2 to index 1. The `move` op carries:
-- **`from`** — where the element was in base
-- **`to`** — where it is in draft
-- **`identity`** — which element was displaced
+'Transform' moved from index 2 to index 1. The `move` op carries `from` (where it was in base), `to` (where it is in draft), and `identity` (which element). An element that was also field-changed in the same snapshot gets a `replace` op with a non-zero `displacement` field alongside its `changes`.
 
-### Displacement on modified elements
+### Displacement is revertible
 
-If an element is both field-changed and displaced, the `replace` op carries both: `changes` for the field diffs and `displacement` (integer delta: `draftIndex - baseIndex`) for the position shift.
+Pass the `move` op to `restore()` to splice the element back to its original position:
 
 ```ts
-// add X before 'Fetch', then change 'Fetch' label
-engine.add('$.steps[0]', { id: 'x', label: 'Setup' })
-engine.replace('$.steps[1].label', 'Fetch data')
-
-engine.diff()
-// [
-//   { op: 'add', ..., identity: 'x' },
-//   {
-//     op: 'replace', path: "$['steps'][1]", identity: 'a',
-//     displacement: 1,   // shifted right by 1
-//     changes: [{ op: 'replace', path: "$['steps'][1]['label']", ... }]
-//   }
-// ]
-```
-
-### Restoring displacement
-
-Pass the `move` op to `restore()`. It splices the element back to its base position:
-
-```ts
-const moveOp = engine.diff().find(o => o.op === 'move' && o.identity === 'c')
-engine.restore(moveOp)  // c is spliced back to index 2
+const ops = engine.diff()
+const displaced = ops.find(o => o.op === 'move' && o.identity === 'c')
+engine.restore(displaced)  // 'Transform' spliced back to index 2
+engine.undo()              // un-does the restore
 ```
 
 ### Cancellation
 
-An add and a remove at the same position cancel out — the net displacement for surrounding elements is zero, and no `move` op is emitted:
+An add and a remove at the same position cancel each other out. The net displacement for surrounding elements is zero, so no `move` ops are emitted:
 
 ```ts
-engine.delete('$.steps[1]')     // remove 'Validate' at index 1
-engine.add('$.steps[1]', { id: 'x', label: 'New step' })  // insert at index 1
+engine.delete('$.steps[1]')
+engine.add('$.steps[1]', { id: 'x', label: 'New' })
 
 engine.diff('$.steps')
-// [ remove for 'Validate', add for 'x' ]
-// no move ops for 'Transform' — its net displacement is 0
+// [ remove for 'b', add for 'x' ]
+// no move op for 'c'. Its net position did not change.
 ```
 
----
+## Primitive sets: x-key '$self'
 
-## x-key: '$self' — set semantics
-
-For arrays of primitives that are semantically sets — tags, permissions, feature flags — declare `x-key: '$self'`. The item itself is the identity.
-
-Reorders are invisible (sets have no order). Duplicates collapse (sets have no duplicates). A single add or remove produces a single op.
+For arrays of primitives that are semantically sets, tags, permission names, feature flags, there is no field to use as an identity. The value itself is the identity. Declare `x-key: '$self'`:
 
 ```ts
 const engine = new Engine(
-  { permissions: ['read', 'write', 'admin'] },
+  { tags: ['urgent', 'bug', 'backend'] },
   {
     schema: {
       type: 'object',
       properties: {
-        permissions: { type: 'array', 'x-key': '$self', items: { type: 'string' } },
+        tags: { type: 'array', 'x-key': '$self', items: { type: 'string' } },
       },
     },
   },
 )
 
-engine.delete('$.permissions[1]')
+engine.delete('$.tags[1]')
 
 engine.diff()
-// [ { op: 'remove', path: "$['permissions'][1]", value: 'write', identity: 'write' } ]
+// [ { op: 'remove', path: "$['tags'][1]", value: 'bug', identity: 'bug' } ]
 ```
 
-Restricted to primitive items. For sets of objects, add a stable ID field and use `x-key: '<field>'`.
+Under `$self`, reorders are invisible (sets have no order), duplicates collapse (sets have no duplicates), and a single add or remove produces a single op regardless of where in the array it falls. Restricted to primitive items. For sets of objects, add a stable ID field and use `x-key: '<field>'`.
 
----
+## Rendering full lists
 
-## Full list rendering: includeUnchanged
-
-By default, `diff()` returns only changed elements. Pass `includeUnchanged: true` to get every element — changed or not — each tagged with an `op` of `unchanged`. This lets you render a complete list with change highlighting from one call, without merging the diff against the raw array yourself.
+By default, `diff()` returns only changed elements. For a UI that needs to render the complete list, pass `includeUnchanged: true`:
 
 ```ts
-engine.diff('$.regions', { key: 'id', includeUnchanged: true })
-// add / replace / remove / move for changed elements
-// { op: 'unchanged', path, identity, value, displacement: 0 } for stable ones
+engine.diff('$.users', { includeUnchanged: true })
+// every element returned, each tagged with its state:
+// add / replace / move for changed elements
+// { op: 'unchanged', identity, value, displacement: 0 } for stable ones
 ```
 
----
+One dataset drives both the full list rendering and the change summary. No merging required.
 
-## Identity stability
+## Nested arrays
 
-If the field that `x-key` points to changes value, the diff sees it as a **remove + add** — not a modify. This is by design. Identity is the slice of an element that doesn't change when you edit everything else. Changing it means a different element.
+`x-key` nests. Arrays inside elements can each declare their own key. By default, a change inside a nested keyed array bubbles up and marks the parent element as modified. The nested change appears inside the parent element's `changes` array.
+
+To contain changes within their own identity boundary, pass `cascade: false`:
 
 ```ts
-engine.replace('$.regions[0].id', 'us-west')
-
-engine.diff()
-// [
-//   { op: 'remove', ..., identity: 'us-east' },
-//   { op: 'add',    ..., identity: 'us-west'  },
-// ]
-// not a replace — the old element is gone, a new one appeared
+engine.diff(undefined, { cascade: false })
 ```
+
+Use this when you are diffing at the parent level and want to know only about direct field changes, not what happened inside nested child collections.

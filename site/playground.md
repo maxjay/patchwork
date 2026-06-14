@@ -20,4 +20,4 @@ const engine = new Engine({ /* your document */ }, { schema: { /* optional */ } 
 return engine
 ```
 
-Anything valid in the [guide](/guide) or [array diffing](/arrays) docs works here.
+Anything valid in the [guide](/) or [array diffing](/arrays) docs works here.

@@ -1,32 +1,33 @@
 <template>
   <div class="playground-wrap">
     <div class="playground-header">
-      <select :value="currentPreset" @change="loadPreset(+($event.target as HTMLSelectElement).value)">
+      <select @change="loadPreset(+($event.target as HTMLSelectElement).value)">
         <option v-for="(p, i) in presets" :key="i" :value="i">{{ p.label }}</option>
       </select>
-      <button @click="run">Run</button>
-      <span v-if="error" style="color: var(--vp-c-danger-1); font-size: 13px;">{{ error }}</span>
+      <span class="playground-status">{{ status }}</span>
+      <span v-if="error" class="playground-error-inline">{{ error }}</span>
     </div>
+
     <div class="playground-body">
-      <div class="playground-editor">
-        <textarea
-          v-model="code"
-          spellcheck="false"
-          @keydown.tab.prevent="onTab"
-        />
-      </div>
-      <div class="playground-output">
-        <div class="playground-pane">
-          <div class="playground-pane-label">base</div>
-          <pre>{{ baseStr }}</pre>
-        </div>
-        <div class="playground-pane">
-          <div class="playground-pane-label">draft</div>
-          <pre>{{ draftStr }}</pre>
-        </div>
-        <div class="playground-pane">
-          <div class="playground-pane-label">diff</div>
-          <pre>{{ diffStr }}</pre>
+      <div class="playground-editor" ref="editorContainer" />
+
+      <div class="playground-output" :class="{ empty: !hasResult }">
+        <template v-if="hasResult">
+          <div class="playground-pane">
+            <div class="playground-pane-label">base</div>
+            <pre>{{ baseStr }}</pre>
+          </div>
+          <div class="playground-pane">
+            <div class="playground-pane-label">draft</div>
+            <pre>{{ draftStr }}</pre>
+          </div>
+          <div class="playground-pane">
+            <div class="playground-pane-label">diff</div>
+            <pre>{{ diffStr }}</pre>
+          </div>
+        </template>
+        <div v-else class="playground-empty">
+          Edit the code and results appear automatically.
         </div>
       </div>
     </div>
@@ -34,8 +35,15 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
+import { useData } from 'vitepress'
+import { EditorView, basicSetup } from 'codemirror'
+import { javascript } from '@codemirror/lang-javascript'
+import { oneDark } from '@codemirror/theme-one-dark'
+import { Compartment } from '@codemirror/state'
 import { Engine } from '../../../src/engine'
+
+const { isDark } = useData()
 
 interface Preset { label: string; code: string }
 
@@ -76,7 +84,7 @@ return engine`,
 
 engine.replace('$.role', 'admin')
 engine.accept()
-// base and draft both have role: 'admin'
+// base and draft both show role: 'admin'
 
 engine.replace('$.name', 'Bob')
 engine.decline()
@@ -108,7 +116,7 @@ return engine`,
   },
 )
 
-// Remove Bob — one remove op, no cascade
+// Remove Bob — one op, no cascade
 engine.delete('$.users[1]')
 
 // Promote Alice — element-level replace with changes
@@ -142,7 +150,7 @@ return engine`,
   },
 )
 
-// Remove 'Validate' — c and d are displaced (move ops)
+// Remove 'Validate' — c and d are displaced (move ops in diff)
 engine.delete('$.steps[1]')
 
 return engine`,
@@ -151,7 +159,7 @@ return engine`,
     label: 'Ephemeral session',
     code: `const engine = new Engine({ response: '' })
 
-// All replacements collapse into one undo entry
+// All mutations collapse into one undo entry
 engine.beginEphemeral()
 engine.replace('$.response', 'Hello')
 engine.replace('$.response', 'Hello, ')
@@ -174,20 +182,25 @@ return engine`,
 const cars = engine.getNodeEngine('$.cars')
 cars.replace('$[0].color', 'yellow')
 
-// mutation is visible on both parent and lens
-// cars.draft[0].color === 'yellow'
-// engine.draft.cars[0].color === 'yellow'
+// Mutation is visible on both parent and lens.
+// cars.diff() scopes ops to cars only.
 
 return engine`,
   },
 ]
 
-const currentPreset = ref(0)
+const editorContainer = ref<HTMLDivElement>()
 const code = ref(presets[0].code)
-const baseStr = ref('')
+const baseStr  = ref('')
 const draftStr = ref('')
-const diffStr = ref('')
-const error = ref('')
+const diffStr  = ref('')
+const error    = ref('')
+const status   = ref('ready')
+const hasResult = ref(false)
+
+const themeCompartment = new Compartment()
+let view: EditorView | null = null
+let debounce: ReturnType<typeof setTimeout> | null = null
 
 function run() {
   error.value = ''
@@ -195,32 +208,68 @@ function run() {
     const fn = new Function('Engine', `"use strict";\n${code.value}`)
     const engine = fn(Engine) as Engine
     if (!engine || typeof engine.diff !== 'function') {
-      error.value = 'Code must return an engine instance'
+      error.value = 'Return an engine instance at the end of the code.'
+      hasResult.value = false
+      status.value = 'error'
       return
     }
-    baseStr.value  = JSON.stringify(engine.base, null, 2)
+    baseStr.value  = JSON.stringify(engine.base,  null, 2)
     draftStr.value = JSON.stringify(engine.draft, null, 2)
     diffStr.value  = JSON.stringify(engine.diff(), null, 2)
+    hasResult.value = true
+    status.value = 'ok'
   } catch (e: any) {
     error.value = e.message
-    baseStr.value = draftStr.value = diffStr.value = ''
+    hasResult.value = false
+    status.value = 'error'
   }
 }
 
+function schedule() {
+  status.value = '...'
+  if (debounce) clearTimeout(debounce)
+  debounce = setTimeout(run, 500)
+}
+
 function loadPreset(index: number) {
-  currentPreset.value = index
   code.value = presets[index].code
+  view?.dispatch({
+    changes: { from: 0, to: view.state.doc.length, insert: presets[index].code },
+  })
   run()
 }
 
-function onTab(e: KeyboardEvent) {
-  const el = e.target as HTMLTextAreaElement
-  const start = el.selectionStart
-  const end = el.selectionEnd
-  el.value = el.value.slice(0, start) + '  ' + el.value.slice(end)
-  el.selectionStart = el.selectionEnd = start + 2
-  code.value = el.value
-}
+watch(isDark, (dark) => {
+  view?.dispatch({
+    effects: themeCompartment.reconfigure(dark ? oneDark : []),
+  })
+})
 
-onMounted(run)
+onMounted(() => {
+  view = new EditorView({
+    doc: code.value,
+    extensions: [
+      basicSetup,
+      javascript(),
+      themeCompartment.of(isDark.value ? oneDark : []),
+      EditorView.updateListener.of((update) => {
+        if (update.docChanged) {
+          code.value = update.state.doc.toString()
+          schedule()
+        }
+      }),
+      EditorView.theme({
+        '&': { height: '100%' },
+        '.cm-scroller': { overflow: 'auto', fontFamily: 'var(--vp-font-family-mono)', fontSize: '13px' },
+      }),
+    ],
+    parent: editorContainer.value!,
+  })
+  run()
+})
+
+onBeforeUnmount(() => {
+  view?.destroy()
+  if (debounce) clearTimeout(debounce)
+})
 </script>
