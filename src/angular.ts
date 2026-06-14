@@ -30,7 +30,7 @@ export interface PatchworkStore<T extends JsonValue = JsonValue> {
 	getBase<U = JsonValue>(path: string): Signal<Array<{ path: string; value: U }>>;
 	getValue<U = JsonValue>(path: string): Signal<U>;
 	getValueBase<U = JsonValue>(path: string): Signal<U>;
-	diff(path?: string, options?: { key?: string }): Signal<DiffOp[]>;
+	diff(path?: string, options?: { key?: string; includeUnchanged?: boolean; cascade?: boolean }): Signal<DiffOp[]>;
 
 	add(path: string, value: any): void;
 	replace(path: string, value: any): void;
@@ -38,6 +38,7 @@ export interface PatchworkStore<T extends JsonValue = JsonValue> {
 	move(from: string, to: string): void;
 	copy(from: string, to: string): void;
 	revert(path: string): void;
+	restore(op: DiffOp): void;
 
 	undo(): void;
 	redo(): void;
@@ -108,7 +109,7 @@ class PatchworkStoreImpl<T extends JsonValue> implements PatchworkStore<T> {
 		}, { equal: neverEqual });
 	}
 
-	diff(path?: string, options?: { key?: string }): Signal<DiffOp[]> {
+	diff(path?: string, options?: { key?: string; includeUnchanged?: boolean; cascade?: boolean }): Signal<DiffOp[]> {
 		return computed(() => {
 			this._draftTick();
 			this._baseTick();
@@ -122,6 +123,7 @@ class PatchworkStoreImpl<T extends JsonValue> implements PatchworkStore<T> {
 	move(from: string, to: string): void { this.engine.move(from, to); this.fireDraft(); }
 	copy(from: string, to: string): void { this.engine.copy(from, to); this.fireDraft(); }
 	revert(path: string): void { this.engine.revert(path); this.fireDraft(); }
+	restore(op: DiffOp): void { this.engine.restore(op); this.fireDraft(); }
 
 	undo(): void {
 		this.engine.undo();

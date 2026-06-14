@@ -67,7 +67,7 @@ const store = fromEngine(engine);
 | `store.getBase<U>(path)` | `Signal<Array<{path, value: U}>>` | base, JSONPath query |
 | `store.getValue<U>(path)` | `Signal<U>` | draft, strict single-match |
 | `store.getValueBase<U>(path)` | `Signal<U>` | base, strict single-match |
-| `store.diff(path?, options?)` | `Signal<DiffOp[]>` | structural diff |
+| `store.diff(path?, options?)` | `Signal<DiffOp[]>` | structural diff — options: `key`, `includeUnchanged`, `cascade` |
 
 #### Typed generics
 
@@ -100,6 +100,8 @@ template: `{{ store.getValue('$.server.port')() }}`
 ### Mutations (sync, no return)
 
 `add`, `replace`, `delete`, `move`, `copy`, `revert` — same signatures as `Engine`. Each fires the draft signal.
+
+`restore(op)` — inverts a `DiffOp` from `diff()` and pushes it onto the undo stack. Fires the draft signal.
 
 `undo`, `redo` — fire both draft and base signals.
 
@@ -159,9 +161,10 @@ class ItemList {
 
   stateOf(id: string): string {
     const ops = this.diff();
-    if (ops.some(o => o.op === 'add'    && o.identity === id)) return 'added';
-    if (ops.some(o => o.op === 'remove' && o.identity === id)) return 'removed';
-    if (ops.some(o => o.op === 'replace'))                     return 'modified';
+    if (ops.some(o => o.op === 'add'     && o.identity === id)) return 'added';
+    if (ops.some(o => o.op === 'remove'  && o.identity === id)) return 'removed';
+    if (ops.some(o => o.op === 'replace' && o.identity === id)) return 'modified';
+    if (ops.some(o => o.op === 'move'    && o.identity === id)) return 'displaced';
     return 'unchanged';
   }
 }
