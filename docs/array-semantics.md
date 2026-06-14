@@ -35,18 +35,12 @@ properly rather than papering over it.
    *declared*, never inferred. Structural / whole-value identity breaks the
    instant you edit, turning an edit into remove + add.
 
-4. **Order shows up in the diff two ways, and only one is revertible.**
-   - A **move** — an element changed its order *relative to the other surviving
-     elements* (you dragged C in front of B). A real, user-made change.
-     Revertible (move it back).
-   - An **effect** — an element's absolute index shifted *only* because
-     something else was added or removed near it; its order relative to the
-     survivors is unchanged. The array cares about order, so this is real and is
-     surfaced — but it is **not revertible on its own**. It carries a *reason*
-     pointing at the entries that caused the shift; you revert the cause.
-
-   Position is therefore never a free-standing "modification". It splits into
-   `move` (revertible) and `effect` (consequence, not revertible).
+4. **When order matters, an element's index can shift purely because something
+   else was added or removed near it.** That displacement is real — the array
+   cares about order, so it is *surfaced* — but it is **not a modification of
+   that element and not revertible on its own**: you revert the cause. We record
+   it as an **`effect`**, carrying a *reason* that points at the add/remove that
+   displaced it.
 
 ## Entry kinds
 
@@ -54,23 +48,13 @@ The diff / items API labels **every** element with exactly one state:
 
 | kind | typical colour | meaning | revertible? | extra |
 |---|---|---|---|---|
-| `unchanged` | — | identical, and didn't cross any survivor | n/a | |
+| `unchanged` | — | identical | n/a | |
 | `add` | green | in draft, not base | yes — remove it | |
 | `remove` | red | in base, not draft | yes — restore it | |
 | `modify` | yellow | same element, fields differ | yes — restore fields | field-level changes |
-| `move` | (own colour) | crossed another surviving element | yes — move back | from/to order |
 | `effect` | muted | index shifted as a consequence of a nearby add/remove | **no** | `reason` → causing entries |
 
-`move` and `effect` occur **only in ordered arrays**. Unordered arrays never
-produce them.
-
-`move` is **not new**: `OpType.Move`, the `{ from, to }` DiffOp variant,
-`engine.move()`, and `importChanges` all already exist (engine.ts). A move op is
-even created today — but only inside `engine.move()`, pushed onto the undo stack
-for `exportChanges`. What's missing is `diff()` *emitting* one: the base↔draft
-walk (`diffNode`) produces only add/remove/replace and never detects a reorder.
-So the only genuinely new concept here is **`effect`**; `move` just needs the
-diff to start emitting the op the engine already has.
+`effect` occurs **only in ordered arrays**. Unordered arrays never produce it.
 
 > **One API, both views.** The API returns every element with its state —
 > including `unchanged` and `effect` — so a consumer can render the **full draft
@@ -83,21 +67,19 @@ diff to start emitting the op the engine already has.
 ### 1. Unordered array — a bag
 Position is noise.
 
-- **Diff**: `add` / `remove` / `modify` only — no `move`, no `effect`. Reorders
-  and index shifts are invisible; removing B does not touch C in anything the
-  diff records.
+- **Diff**: `add` / `remove` / `modify` only — no `effect`. Reorders and index
+  shifts are invisible; removing B does not touch C in anything the diff records.
 - **Revert**: restore membership; re-insert anywhere (append). Position is a
   non-question.
 - Typical: tags, permissions, a collection of config objects keyed by id.
 
 ### 2. Ordered array — a sequence
-Order is meaningful, so the diff records both *who moved* and *who was displaced*.
+Order is meaningful, so a displaced element is surfaced.
 
-- **Diff**: `add` / `remove` / `modify`, **plus**
-  - `move` — an element crossed another *surviving* element. Revertible.
-  - `effect` — an element's index shifted because of an add/remove near it, its
-    order relative to the survivors unchanged. Surfaced, but **not revertible**;
-    its `reason` points at the causing add/remove entries.
+- **Diff**: `add` / `remove` / `modify`, **plus** `effect` — an element whose
+  index shifted because of an add/remove near it. Surfaced (the array cares about
+  order) but **not revertible**; its `reason` points at the causing add/remove
+  entries.
 - **Worked example** (the case that pinned this down): base `[A, B, C]`; remove
   B, add D where B was, restore B → `[A, B, D, C]`. Net vs base: **D added**
   (revertible); **C effected** — index 2→3, `reason` = the add of D, *not*
@@ -119,11 +101,11 @@ Ordered, but removal **keeps the slot** instead of closing the gap.
 
 ## Summary
 
-| array kind | others' index shifts on add/remove | recorded as | genuine reorder |
-|---|---|---|---|
-| unordered | invisible | nothing | invisible |
-| ordered (gap-closing) | real | `effect` (not revertible, has `reason`) | `move` (revertible) |
-| ordered in-place | none (slot stays) | nothing | `move` (revertible) |
+| array kind | others' index shifts on add/remove | recorded as |
+|---|---|---|
+| unordered | invisible | nothing |
+| ordered (gap-closing) | real | `effect` (not revertible, has `reason`) |
+| ordered in-place | none (slot stays) | nothing |
 
 ## Declaration (how the engine knows which)
 
@@ -134,22 +116,19 @@ Ordered, but removal **keeps the slot** instead of closing the gap.
   has no native key concept.
 - **Ordered vs unordered**: JSON Schema has no keyword for "this list's order is
   meaningful", so this is our own declaration — a boolean alongside the key.
-  (`prefixItems` is the one positional case JSON Schema does express, for tuples.)
 - **In-place**: a second boolean on an ordered array. Deferred.
 
-## Prior art (why `effect`/`move` over an index cascade)
+## Prior art (why surface displacement instead of cascading it)
 
-No RFC defines array *diff* semantics. **RFC 6902 (JSON Patch)** addresses array
-elements by index and supplies the `move`/`copy` *vocabulary*, but it is a patch
-format, not a diff — and many 6902 diff libraries emit only add/remove/replace.
-The question "what is a change in a sequence" is owned by **Myers/LCS** (powers
-`git diff` — LCS members are unchanged, the diff is insert/delete) and by
-**sequence CRDTs** (Yjs, Automerge, RGA — each element has stable identity and a
-position defined by between-ness of its neighbours; inserting near an element
-does not modify it). Both treat "D inserted before C" as an insertion, not a
-change to C. Our `effect` kind is the bridge: it lets an order-significant UI
-*surface* that C was displaced (which pure LCS would hide) without pretending the
-displacement is an independently revertible edit.
+No RFC defines array *diff* semantics. The question "what is a change in a
+sequence" is owned by **Myers/LCS** (powers `git diff` — common-subsequence
+members are unchanged; the diff is insert/delete) and by **sequence CRDTs** (Yjs,
+Automerge, RGA — each element has stable identity and a position defined by
+between-ness of its neighbours; inserting near an element does not modify it).
+Both treat "D inserted before C" as an insertion, not a change to C. Our `effect`
+kind is the bridge: it lets an order-significant UI *surface* that C was displaced
+(which pure LCS would hide) without pretending the displacement is an
+independently revertible edit.
 
 ## Implementation stance (direction, not detailed design)
 
@@ -159,19 +138,13 @@ displacement is an independently revertible edit.
   op stack — capture *what to restore* as a closure, don't re-derive locations
   from path strings. `effect` entries have **no revert closure by
   construction** — they cannot be reverted; the `reason` redirects to the cause.
-- **Ordered diff** is computed two ways from the same pairing: *relative order of
-  common identities* (LCS-flavoured) yields `move`; *absolute index delta* yields
-  `effect`. Both are cheap; neither stores position in the user's data.
+- **Ordered diff** computes `effect` from the absolute index delta of an element
+  that is otherwise unchanged. Cheap; no stored position in the user's data.
 
 ## Deferred / open
 
 - Composite and nested-path identity (declared, mechanical).
 - Repeatable ordered sequences → synthetic per-element ids.
 - In-place ordered arrays (the third kind) — concept captured here, build later.
-- **Name of the new kind**: `effect` / `consequence` / `shift` — provisional;
-  pick one.
-- `move` already exists (`OpType.Move`, import/export). The new work is (a)
-  teaching `diff()` to detect a reorder and emit it, (b) deciding what its
-  `from`/`to` are for a *detected* reorder — the existing op is path-based, but a
-  reorder is more naturally identity/index — and (c) representing several
-  elements crossing at once (per-element vs a minimal move-set).
+- **Name of the new kind**: `effect` / `consequence` / `shift` — provisional.
+- Deliberate user reordering of an ordered array — not yet defined.
