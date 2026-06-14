@@ -176,7 +176,7 @@ Without a declared identity, arrays are diffed position-by-position. Deleting th
 
 ### Identity-keyed: `x-key`
 
-Declare `x-key` on an array schema and patchwork matches elements across `base` and `draft` by that field. One element deleted produces one `remove` op, regardless of what follows it.
+Declare `x-key` on an array schema and patchwork matches elements across `base` and `draft` by that field. One element deleted produces one `remove` op, regardless of what follows it. Field changes on a matched element produce one `replace` op at the element level, with a `changes` array of the individual field-level diffs.
 
 ```ts
 const engine = new Engine(
@@ -202,21 +202,52 @@ const engine = new Engine(
 );
 
 engine.delete('$.regions[0]');
-
 engine.diff();
 // [ { op: 'remove', path: "$['regions'][0]", value: { id: 'us-east', ... }, identity: 'us-east' } ]
 // one op — not a cascade
+
+engine.replace('$.regions[0].capacity', 90);
+engine.diff();
+// [
+//   {
+//     op: 'replace', path: "$['regions'][0]", identity: 'eu-west',
+//     value: { id: 'eu-west', capacity: 90 }, oldValue: { id: 'eu-west', capacity: 80 },
+//     displacement: 0,
+//     changes: [{ op: 'replace', path: "$['regions'][0]['capacity']", oldValue: 80, value: 90 }]
+//   }
+// ]
 ```
 
-`x-key` nests: arrays inside arrays can each declare their own key. The engine resolves the right field at each depth automatically via path-pattern matching.
+`x-key` nests: arrays inside arrays can each declare their own key. By default, field changes in a nested keyed array bubble up and mark the parent element as modified (its `changes` will include them). Pass `cascade: false` to `diff()` to contain changes within their own identity boundary — a nested change will not mark the parent as modified.
 
-The `identity` field on `DiffOp` carries the matched key value directly, so consumers don't need schema knowledge to identify what was added or removed.
+The `identity` field on `DiffOp` carries the matched key value, so consumers don't need schema knowledge to identify what was added, removed, or changed.
 
 For a one-off without a schema:
 
 ```ts
 engine.diff('$.regions', { key: 'id' });
 ```
+
+### Ordered arrays: `x-ordered`
+
+Add `x-ordered: true` alongside `x-key` to declare that position is meaningful. When an element's index shifts because something was added or removed nearby, patchwork surfaces that as a `move` op — a displacement — rather than hiding it.
+
+```ts
+// schema: { 'x-key': 'id', 'x-ordered': true, ... }
+
+engine.delete('$.steps[0]');   // removes step A
+
+engine.diff();
+// [
+//   { op: 'remove', path: "$['steps'][0]", identity: 'A', value: {...} },
+//   { op: 'move',   from: "$['steps'][1]", to: "$['steps'][0]", identity: 'B' },
+//   { op: 'move',   from: "$['steps'][2]", to: "$['steps'][1]", identity: 'C' },
+// ]
+```
+
+`move` ops from identity-keyed arrays carry `identity` so you know which element was displaced. The `displacement` field on `replace` ops tells you how far an element moved when it was also modified.
+
+To restore a displacement, pass the `move` op to `restore()` — it splices the element back to its base position.
 
 ### Set semantics: `x-key: '$self'`
 
@@ -242,6 +273,34 @@ engine.diff();
 ```
 
 Restricted to primitive items. For sets of objects, add a stable ID field and use `x-key: '<field>'`.
+
+### Rendering full lists with `includeUnchanged`
+
+By default `diff()` returns only changed elements. Pass `includeUnchanged: true` to include every element — changed or not — each labelled with its state. This lets you render a complete list with change highlighting from a single call, without merging the diff against the raw array yourself.
+
+```ts
+engine.diff('$.regions', { includeUnchanged: true });
+// returns add / replace / remove / move ops for changed elements,
+// plus { op: 'unchanged', ... } for every element that stayed the same
+```
+
+### Reverting a diff op
+
+`restore(op)` takes any `DiffOp` produced by `diff()` and applies the inverse mutation to draft, pushing it onto the undo stack like any other operation. The diff must reflect the current draft state — if you mutate after diffing, re-diff before restoring.
+
+```ts
+const ops = engine.diff('$.regions');
+const removeOp = ops.find(o => o.op === 'remove' && o.identity === 'us-east');
+engine.restore(removeOp);  // re-inserts us-east at its original position
+engine.undo();             // un-does the restore
+```
+
+| op | what `restore` does |
+|---|---|
+| `add` | deletes the element |
+| `remove` | re-inserts it at its original position |
+| `replace` | reverts the element to `oldValue` |
+| `move` | splices it back to its base position |
 
 ## Scoped lenses
 
@@ -335,7 +394,8 @@ See **[docs/angular.md](docs/angular.md)** for the full API, typed generics, cha
 | `.getBase(path)` | Same as `get` but reads from base. |
 | `.getValue(path)` | Strict single-match read from draft. Throws `Error` on multi-match; throws `undefined` on no-match. |
 | `.getValueBase(path)` | Same as `getValue` but reads from base. |
-| `.diff(path?, options?)` | `DiffOp[]` — structural diff between base and draft. |
+| `.diff(path?, options?)` | `DiffOp[]` — structural diff between base and draft. `options.key` sets a one-off identity key; `options.includeUnchanged` includes unchanged elements; `options.cascade` (default `true`) controls whether nested identity-array changes bubble up to the parent. |
+| `.restore(op)` | Invert a `DiffOp` from `diff()` and push it onto the undo stack. |
 | `.undo()` / `.redo()` | Reverse / replay the last operation. |
 | `.accept()` | Promote draft into base. Reversible. |
 | `.decline()` | Reset draft from base. Reversible. |
@@ -364,17 +424,23 @@ See **[docs/angular.md](docs/angular.md)** for the full API, typed generics, cha
 
 ```ts
 type DiffOp =
-  | { op: 'add';           path: string; absolutePath?: string; value: JsonValue; identity?: JsonValue }
-  | { op: 'replace';       path: string; absolutePath?: string; oldValue?: JsonValue; value: JsonValue; identity?: JsonValue }
-  | { op: 'remove';        path: string; absolutePath?: string; value?: JsonValue; identity?: JsonValue }
-  | { op: 'move' | 'copy'; from: string; to: string }
-  | { op: 'revert';        path: string; absolutePath?: string }
+  | { op: 'add';       path: string; absolutePath?: string; value: JsonValue; identity?: JsonValue }
+  | { op: 'replace';   path: string; absolutePath?: string; oldValue?: JsonValue; value: JsonValue;
+      identity?: JsonValue; displacement?: number; changes?: DiffOp[] }
+  | { op: 'remove';    path: string; absolutePath?: string; value?: JsonValue; identity?: JsonValue }
+  | { op: 'move';      from: string; to: string; identity?: JsonValue }
+  | { op: 'copy';      from: string; to: string }
+  | { op: 'revert';    path: string; absolutePath?: string }
+  | { op: 'unchanged'; path: string; absolutePath?: string; value: JsonValue; identity: JsonValue; displacement: number }
 ```
 
 - `path` — normalized JSONPath (`$['key'][0]`).
 - `absolutePath` — present on ops from `NodeEngine.diff()`. Contains the full document path while `path` is relative to the child's `$`.
-- `identity` — present on `add` / `remove` ops produced by identity-keyed array diffing. The matched key value (or the item itself for `$self`). Not present on field-level `replace` ops or index-zip ops.
+- `identity` — the matched key value for identity-keyed array ops. Present on `add`, `remove`, `move`, and element-level `replace` ops. The item itself for `$self` arrays.
 - `oldValue` — present on `replace` ops; the value that was there before.
+- `displacement` — on element-level `replace` and `unchanged` ops from ordered arrays (`x-ordered: true`). Integer delta: `draftIndex − baseIndex`. Zero if position did not change.
+- `changes` — on element-level `replace` ops. Flat list of field-level `DiffOp`s describing what changed inside the element. Paths are absolute document paths.
+- `unchanged` op — only emitted when `diff()` is called with `includeUnchanged: true`.
 
 ### Entrypoints
 
