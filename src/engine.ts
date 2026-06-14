@@ -1,20 +1,9 @@
 import { paths, type JsonValue } from 'jsonpath-rfc9535';
 import parse from 'jsonpath-rfc9535/parser';
-import {
-	type Seg,
-	canonicalizeSegs,
-	ghostInsertIndex,
-	identityOf,
-	isPlainObject,
-	isUnderPrefix,
-	joinPath,
-	patternChild,
-	patternElement,
-	rebasePath,
-	resolveCanonical,
-	segmentsToPattern,
-	segsToPath,
-} from './paths.js';
+
+function isPlainObject(v: JsonValue): v is Record<string, JsonValue> {
+	return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
 
 export enum OpType {
 	Add = 'add',
@@ -23,6 +12,7 @@ export enum OpType {
 	Move = 'move',
 	Copy = 'copy',
 	Revert = 'revert',
+	Unchanged = 'unchanged',
 }
 
 // An Operation is a reversible action pushed onto the undo stack.
@@ -36,40 +26,36 @@ export interface Operation {
 // expressed as a JSONPath + the relevant values. Unlike Operation, it has no
 // knowledge of history or how to reverse anything — it's purely descriptive.
 export type DiffOp =
-	| { op: OpType.Add;     path: string; absolutePath?: string; value: JsonValue; identity?: JsonValue }
-	| { op: OpType.Replace; path: string; absolutePath?: string; oldValue?: JsonValue; value: JsonValue; identity?: JsonValue }
-	| { op: OpType.Remove;  path: string; absolutePath?: string; value?: JsonValue; identity?: JsonValue }
-	| { op: OpType.Move | OpType.Copy; from: string; to: string }
-	| { op: OpType.Revert; path: string; absolutePath?: string };
+	| { op: OpType.Add;       path: string; absolutePath?: string; value: JsonValue; identity?: JsonValue }
+	| { op: OpType.Replace;   path: string; absolutePath?: string; oldValue?: JsonValue; value: JsonValue; identity?: JsonValue; displacement?: number; changes?: DiffOp[] }
+	| { op: OpType.Remove;    path: string; absolutePath?: string; value?: JsonValue; identity?: JsonValue }
+	| { op: OpType.Move;      from: string; to: string; identity?: JsonValue }
+	| { op: OpType.Copy;      from: string; to: string }
+	| { op: OpType.Revert;    path: string; absolutePath?: string }
+	| { op: OpType.Unchanged; path: string; absolutePath?: string; value: JsonValue; identity: JsonValue; displacement: number };
 
-// One element of the merged identity view returned by items(). Pure data,
-// so the view is JSON-serializable as-is.
-export type ItemEntry<V extends JsonValue = JsonValue> = {
-	// The x-key value (or the item itself under x-key: '$self'). The data
-	// handle — use it for list tracking and display.
-	identity: JsonValue;
-	// The action handle: engine-built canonical identity path for this
-	// element, e.g. $['users'][?@['email'] == "b@x.com"]. Feeds straight into
-	// delete/replace/get/getBase; resolves to the live item in draft, the
-	// ghost in base, never a different element. Never an index — it can't go
-	// stale when the array is spliced.
-	path: string;
-	// Absent for unchanged items.
-	op?: OpType.Add | OpType.Remove | OpType.Replace;
-	// The draft item — or the base item when op is Remove (the ghost content).
-	value: V;
-	// Field-level ops for Replace entries. Paths are relative to the item
-	// ($['region']), with identity filters for any nested keyed arrays.
-	changes?: DiffOp[];
-	// Replace entries only. selfChanged: at least one change is on this item's
-	// own field. descendantsChanged: at least one change descends into a nested
-	// keyed element (it carries an identity). Both can be true. Lets a tree UI
-	// tell "this node was edited" from "this node only contains edited children".
-	// Note: a change to a $self set field on the item counts as descendantsChanged
-	// (a $self set is itself a keyed array).
-	selfChanged?: boolean;
-	descendantsChanged?: boolean;
-};
+// Path helpers used by NodeEngine.
+//
+// Normalized paths from paths() always end with `]` after the root token,
+// so segment boundaries are unambiguous from raw string comparison:
+//   prefix      $['cars']
+//   sibling     $['carsTrucks']   — does NOT start with prefix + '['
+//   child       $['cars'][0]      — DOES start with prefix + '['
+//   self        $['cars']         — equals prefix exactly
+
+function joinPath(prefix: string, childPath: string): string {
+	// childPath always starts with $; strip it and concat to prefix
+	return prefix + childPath.slice(1);
+}
+
+function rebasePath(fullPath: string, prefix: string): string {
+	if (fullPath === prefix) return '$';
+	return '$' + fullPath.slice(prefix.length);
+}
+
+function isUnderPrefix(fullPath: string, prefix: string): boolean {
+	return fullPath === prefix || fullPath.startsWith(prefix + '[');
+}
 
 function rebaseDiffOp(op: DiffOp, prefix: string): DiffOp {
 	// Switch (rather than if/else with spread) so TypeScript narrows the union
@@ -82,6 +68,7 @@ function rebaseDiffOp(op: DiffOp, prefix: string): DiffOp {
 		case OpType.Replace:
 		case OpType.Remove:
 		case OpType.Revert:
+		case OpType.Unchanged:
 			return { ...op, path: rebasePath(op.path, prefix) };
 	}
 }
@@ -95,24 +82,29 @@ function opPath(op: DiffOp): string {
 		case OpType.Replace:
 		case OpType.Remove:
 		case OpType.Revert:
+		case OpType.Unchanged:
 			return op.path;
 	}
 }
 
-function extractKeyMap(schema: Record<string, any>, path = '$'): Map<string, string> {
-	const map = new Map<string, string>();
-	if (schema['x-key']) map.set(path, schema['x-key'] as string);
+interface ArrayMeta { key: string; ordered: boolean }
+
+function extractKeyMap(schema: Record<string, any>, path = '$'): Map<string, ArrayMeta> {
+	const map = new Map<string, ArrayMeta>();
+	if (schema['x-key']) map.set(path, { key: schema['x-key'] as string, ordered: schema['x-ordered'] === true });
 	if (schema.properties) {
-		for (const [key, sub] of Object.entries(schema.properties)) {
-			for (const [p, k] of extractKeyMap(sub as Record<string, any>, patternChild(path, key)))
-				map.set(p, k);
-		}
+		for (const [key, sub] of Object.entries(schema.properties))
+			for (const [p, m] of extractKeyMap(sub as Record<string, any>, `${path}['${key}']`))
+				map.set(p, m);
 	}
-	if (schema.items && isPlainObject(schema.items)) {
-		for (const [p, k] of extractKeyMap(schema.items as Record<string, any>, patternElement(path)))
-			map.set(p, k);
-	}
+	if (schema.items && isPlainObject(schema.items))
+		for (const [p, m] of extractKeyMap(schema.items as Record<string, any>, `${path}[*]`))
+			map.set(p, m);
 	return map;
+}
+
+function toPathPattern(path: string): string {
+	return path.replace(/\[\d+\]/g, '[*]');
 }
 
 // In-place write at a non-root path against any target object. Used by
@@ -142,7 +134,7 @@ export class Engine<T extends JsonValue = JsonValue> {
 	private undoStack: Operation[] = [];
 	private redoStack: Operation[] = [];
 	private ephemeralStart = -1;
-	private keyMap: Map<string, string> = new Map();
+	private keyMap: Map<string, ArrayMeta> = new Map();
 
 	constructor(base: T, options?: { schema?: Record<string, any> }) {
 		this.base = structuredClone(base);
@@ -389,117 +381,35 @@ export class Engine<T extends JsonValue = JsonValue> {
 		this.pushOperation({ op, undo: undoDelete, redo: doDelete });
 	}
 
-	// Pushes the inverse of pending changes at the path onto the stack as a
-	// new operation — history is never rewritten.
-	//
-	// Targets are collected from both draft and base and canonicalized against
-	// the side they resolved from: inside keyed arrays this is what keeps the
-	// base-frame and draft-frame occupants of the same index from colliding
-	// into one target (the index-application bug that used to clobber
-	// neighbors when reverting a removed element). Everything is captured
-	// eagerly — concrete positions and cloned values — like every other op;
-	// the stack's LIFO discipline guarantees redo replays from the same state.
 	revert(jsonPath: string): void {
-		const targets = new Map<string, Seg[]>();
-		for (const p of paths(this.draft, jsonPath)) {
-			const canon = canonicalizeSegs(this.draft, this.keyMap, this.segmentsFrom(p));
-			targets.set(segsToPath(canon), canon);
-		}
-		for (const p of paths(this.base, jsonPath)) {
-			const canon = canonicalizeSegs(this.base, this.keyMap, this.segmentsFrom(p));
-			targets.set(segsToPath(canon), canon);
-		}
+		const pathsDraft = paths(this.draft, jsonPath);
+		const pathsBase = paths(this.base, jsonPath);
+		const allPaths = Array.from(new Set([...pathsDraft, ...pathsBase]));
 
-		// Three kinds of work, applied as: sets (no index shifts), then removals
-		// in reverse index order, then re-insertions at positions planned against
-		// the post-removal sequence. Undo mirrors the same lists in reverse.
-		const sets: Array<{ segments: (string | number)[]; oldValue: any; value: any }> = [];
-		const removals: Array<{ segments: (string | number)[]; oldValue: any }> = [];
-		const ghosts: Array<{ canon: Seg[]; value: any; baseIndex: number }> = [];
+		const segmentsList = allPaths.map(np => this.segmentsFrom(np));
 
-		for (const canon of targets.values()) {
-			const baseSegs = resolveCanonical(this.base, canon);
-			const draftSegs = resolveCanonical(this.draft, canon);
-			if (baseSegs === undefined && draftSegs !== undefined) {
-				// draft-only: a pending add — take it out
-				removals.push({ segments: draftSegs, oldValue: structuredClone(this.getAt(draftSegs)) });
-				continue;
-			}
-			if (baseSegs === undefined) continue; // in neither — nothing to revert
-			const value = structuredClone(this.getAt(baseSegs, this.base));
-			const last = canon[canon.length - 1];
-			if (draftSegs !== undefined) {
-				// in both: restore the base value in place
-				sets.push({ segments: draftSegs, oldValue: structuredClone(this.getAt(draftSegs)), value });
-			} else if (typeof last === 'object') {
-				// a removed keyed element: re-insert (position planned below)
-				ghosts.push({ canon, value, baseIndex: baseSegs[baseSegs.length - 1] as number });
-			} else {
-				// a deleted field under a surviving node: resolve the longest prefix
-				// that still exists in draft and create the remainder literally. If
-				// the remainder crosses an identity segment, the keyed element itself
-				// is gone — reverting the element is the right tool — so skip.
-				for (let i = canon.length - 1; i >= 0; i--) {
-					const prefix = resolveCanonical(this.draft, canon.slice(0, i));
-					if (prefix === undefined) continue;
-					const rest = canon.slice(i);
-					if (!rest.some(s => typeof s === 'object')) {
-						const segments = [...prefix, ...(rest as (string | number)[])];
-						sets.push({ segments, oldValue: structuredClone(this.getAt(segments)), value });
-					}
-					break;
-				}
-			}
-		}
-
-		// Plan ghost positions against the identity sequence each array will
-		// have after the removals run, in ascending base order so earlier
-		// restores anchor later ones.
-		ghosts.sort((x, y) => x.baseIndex - y.baseIndex);
-		const insertions: Array<{ segments: (string | number)[]; value: any }> = [];
-		const arrays = new Map<string, { segments: (string | number)[]; sequence: Array<JsonValue | undefined> }>();
-		for (const ghost of ghosts) {
-			const seg = ghost.canon[ghost.canon.length - 1];
-			if (typeof seg !== 'object') continue;
-			const parentCanon = ghost.canon.slice(0, -1);
-			const parentKey = segsToPath(parentCanon);
-			let arr = arrays.get(parentKey);
-			if (!arr) {
-				const segments = resolveCanonical(this.draft, parentCanon);
-				const draftArr = segments === undefined ? undefined : this.getAt(segments);
-				if (segments === undefined || !Array.isArray(draftArr)) continue;
-				const removedIdx = new Set(removals
-					.filter(r => r.segments.length === segments.length + 1 &&
-						typeof r.segments[segments.length] === 'number' &&
-						segments.every((s, i) => r.segments[i] === s))
-					.map(r => r.segments[segments.length] as number));
-				const sequence = draftArr
-					.filter((_, i) => !removedIdx.has(i))
-					.map(item => identityOf(item, seg.key));
-				arr = { segments, sequence };
-				arrays.set(parentKey, arr);
-			}
-			const parentBaseSegs = resolveCanonical(this.base, parentCanon);
-			const baseArr = parentBaseSegs === undefined ? undefined : this.getAt(parentBaseSegs, this.base);
-			const idx = Array.isArray(baseArr) ? ghostInsertIndex(baseArr, arr.sequence, seg) : arr.sequence.length;
-			arr.sequence.splice(idx, 0, seg.value);
-			insertions.push({ segments: [...arr.segments, idx], value: ghost.value });
-		}
+		const oldValues = segmentsList.map(seg => structuredClone(this.getAt(seg, this.draft)));
+		const targetValues = segmentsList.map(seg => structuredClone(this.getAt(seg, this.base)));
 
 		const doRevert = () => {
-			for (const t of sets) this.setAt(t.segments, structuredClone(t.value));
-			// Reverse to preserve array indices when removing multiple elements
-			for (let i = removals.length - 1; i >= 0; i--) this.removeAt(removals[i].segments);
-			for (const t of insertions) this.insertAt(t.segments, structuredClone(t.value));
+			for (let i = 0; i < segmentsList.length; i++) {
+				const val = targetValues[i];
+				if (val === undefined) {
+					this.removeAt(segmentsList[i]);
+				} else {
+					this.setAt(segmentsList[i], structuredClone(val));
+				}
+			}
 		};
 
 		const undoRevert = () => {
-			for (let i = insertions.length - 1; i >= 0; i--) this.removeAt(insertions[i].segments);
-			// Forward order to preserve array indices when restoring multiple elements
-			for (const t of removals) this.insertAt(t.segments, structuredClone(t.oldValue));
-			for (const t of sets) {
-				if (t.oldValue === undefined) this.removeAt(t.segments);
-				else this.setAt(t.segments, structuredClone(t.oldValue));
+			for (let i = 0; i < segmentsList.length; i++) {
+				const val = oldValues[i];
+				if (val === undefined) {
+					this.removeAt(segmentsList[i]);
+				} else {
+					this.setAt(segmentsList[i], structuredClone(val));
+				}
 			}
 		};
 
@@ -517,150 +427,27 @@ export class Engine<T extends JsonValue = JsonValue> {
 	//
 	// Pass options.key to enable identity-based array diffing for the matched
 	// path without needing a schema.
-	diff(path?: string, options?: { key?: string }): DiffOp[] {
+	diff(path?: string, options?: { key?: string; includeUnchanged?: boolean; cascade?: boolean }): DiffOp[] {
+		const includeUnchanged = options?.includeUnchanged ?? false;
+		const cascade          = options?.cascade ?? true;
 		if (options?.key && path) {
 			const resolved = paths(this.draft, path)[0] ?? paths(this.base, path)[0];
 			if (resolved) {
-				// Store the override in pattern form, since the walk looks keys up
-				// by pattern. A path resolving inside one array element therefore
-				// keys all sibling elements' arrays for this call — acceptable for
-				// a one-off override.
-				const pattern = segmentsToPattern(this.segmentsFrom(resolved));
 				const saved = this.keyMap;
-				this.keyMap = new Map([...this.keyMap, [pattern, options.key]]);
-				try { return this._diff(path); }
+				this.keyMap = new Map([...this.keyMap, [resolved, { key: options.key, ordered: false }]]);
+				try { return this._diff(path, includeUnchanged, cascade); }
 				finally { this.keyMap = saved; }
 			}
 		}
-		return this._diff(path);
+		return this._diff(path, includeUnchanged, cascade);
 	}
 
-	private _diff(path?: string): DiffOp[] {
+	private _diff(path?: string, includeUnchanged = false, cascade = true): DiffOp[] {
 		const ops: DiffOp[] = [];
-		this.diffNode(this.base, this.draft, [], '$', ops);
+		this.diffNode(this.base, this.draft, '$', ops, includeUnchanged, cascade, false);
 		if (!path) return ops;
-		// Ops carry canonical paths (identity segments inside keyed arrays), so
-		// the resolved scope prefixes must be canonicalized against the document
-		// they were resolved from before the string prefix-match. Note: scoping
-		// by *index* into a keyed array matches both the base and draft occupant
-		// of that slot — index scoping is inherently ambiguous there; scope by
-		// identity filter for precision.
-		const prefixes = [...new Set([
-			...paths(this.draft, path).map(p => this.canonicalizePath(p, this.draft)),
-			...paths(this.base, path).map(p => this.canonicalizePath(p, this.base)),
-		])];
+		const prefixes = [...new Set([...paths(this.draft, path), ...paths(this.base, path)])];
 		return ops.filter(op => prefixes.some(p => isUnderPrefix(opPath(op), p)));
-	}
-
-	// Converts a concrete index path (as returned by paths()) into canonical
-	// form: positions inside keyed arrays become identity segments, read off
-	// the element in `doc`. Object keys and unkeyed indexes pass through.
-	/** @internal */
-	canonicalizePath(concretePath: string, doc: JsonValue): string {
-		return segsToPath(canonicalizeSegs(doc, this.keyMap, this.segmentsFrom(concretePath)));
-	}
-
-	// Merged identity view of a keyed array — the read model a list UI needs.
-	// Returns the union of base and draft elements matched by identity, each
-	// labelled with the op that describes its state:
-	//
-	//   (no op)  unchanged
-	//   add      present in draft only
-	//   remove   present in base only — value carries the base item (ghost)
-	//   replace  present in both with differences — changes carries the
-	//            field-level ops, paths relative to the item
-	//
-	// Requires an identity key: x-key from the schema, or options.key inline.
-	// Draft items come first in draft order, then removed items in base order.
-	items<V extends JsonValue = JsonValue>(arrayPath: string, options?: { key?: string }): ItemEntry<V>[] {
-		const resolved = [...new Set([...paths(this.draft, arrayPath), ...paths(this.base, arrayPath)])];
-		if (resolved.length !== 1) {
-			throw new Error(`items: path must resolve to exactly one array, got ${resolved.length}`);
-		}
-		const normPath = resolved[0];
-		const segs = this.segmentsFrom(normPath);
-		const pattern = segmentsToPattern(segs);
-		const key = options?.key ?? this.keyMap.get(pattern);
-		if (!key) {
-			throw new Error(`items: no identity key for ${normPath} — declare 'x-key' in the schema or pass options.key`);
-		}
-		const baseVal = this.getAt(segs, this.base);
-		const draftVal = this.getAt(segs, this.draft);
-		if (!Array.isArray(baseVal) && !Array.isArray(draftVal)) {
-			throw new Error(`items: ${normPath} is not an array in draft or base`);
-		}
-		const a = Array.isArray(baseVal) ? baseVal : [];
-		const b = Array.isArray(draftVal) ? draftVal : [];
-
-		// Entry paths are canonical: the prefix up to the array is canonicalized
-		// against the side the array resolved on, then the element's identity
-		// segment is appended — same serializer, same dialect as diff() output.
-		const canonSegs = canonicalizeSegs(Array.isArray(draftVal) ? this.draft : this.base, this.keyMap, segs);
-
-		if (key === '$self') return this.itemsBySelf(a, b, canonSegs) as ItemEntry<V>[];
-
-		const aMap = this.buildIdentityMap(a, key, segs);
-		const bMap = this.buildIdentityMap(b, key, segs);
-		const pathOf = (id: JsonValue) => segsToPath([...canonSegs, { key, value: id }]);
-
-		const entries: ItemEntry[] = [];
-		for (const [id, item] of bMap) {
-			if (!aMap.has(id)) {
-				entries.push({ identity: id, path: pathOf(id), op: OpType.Add, value: item });
-				continue;
-			}
-			// Item-relative diff: segments start fresh at the item (so paths come
-			// out as $['region']) while the pattern stays document-rooted so
-			// nested x-keys keep resolving.
-			const ops: DiffOp[] = [];
-			this.diffNode(aMap.get(id)!, item, [], patternElement(pattern), ops);
-			if (ops.length === 0) {
-				entries.push({ identity: id, path: pathOf(id), value: item });
-			} else {
-				// A change carries an identity iff it descends into a nested keyed
-				// element (the item-relative diff above starts with no identity, so
-				// own-field ops have none). That splits the changes cleanly.
-				const descendantsChanged = ops.some(o => 'identity' in o && o.identity !== undefined);
-				const selfChanged = ops.some(o => !('identity' in o) || o.identity === undefined);
-				entries.push({ identity: id, path: pathOf(id), op: OpType.Replace, value: item, changes: ops, selfChanged, descendantsChanged });
-			}
-		}
-		for (const [id, item] of aMap) {
-			if (!bMap.has(id)) entries.push({ identity: id, path: pathOf(id), op: OpType.Remove, value: item });
-		}
-		return entries as ItemEntry<V>[];
-	}
-
-	// $self variant: the item is its own identity. Set semantics — duplicates
-	// collapse, reorders are invisible, and replace can never occur because
-	// equal primitives are the same set member. Same primitive-only restriction
-	// as diffArrayBySelf, for the same reason (reference equality on objects).
-	private itemsBySelf(a: JsonValue[], b: JsonValue[], canonSegs: Seg[]): ItemEntry[] {
-		for (const arr of [a, b]) {
-			for (const item of arr) {
-				if (item !== null && typeof item === 'object') {
-					throw new Error(
-						`items: x-key '$self' at ${segsToPath(canonSegs)} requires primitive items, got ` +
-						`${Array.isArray(item) ? 'array' : 'object'}. ` +
-						`Use x-key: '<field>' for arrays of objects.`
-					);
-				}
-			}
-		}
-		const pathOf = (item: JsonValue) => segsToPath([...canonSegs, { key: null, value: item }]);
-		const aSet = new Set(a);
-		const entries: ItemEntry[] = [];
-		const seen = new Set<JsonValue>();
-		for (const item of b) {
-			if (seen.has(item)) continue;
-			seen.add(item);
-			if (aSet.has(item)) entries.push({ identity: item, path: pathOf(item), value: item });
-			else entries.push({ identity: item, path: pathOf(item), op: OpType.Add, value: item });
-		}
-		for (const item of aSet) {
-			if (!seen.has(item)) entries.push({ identity: item, path: pathOf(item), op: OpType.Remove, value: item });
-		}
-		return entries;
 	}
 
 	private moveOrCopy(from: string, to: string, isMove: boolean): void {
@@ -786,6 +573,37 @@ export class Engine<T extends JsonValue = JsonValue> {
 		}
 	}
 
+	restore(op: DiffOp): void {
+		switch (op.op) {
+			case OpType.Add:
+				this.delete(op.path);
+				break;
+			case OpType.Remove:
+				this.add(op.path, op.value!);
+				break;
+			case OpType.Replace:
+				this.replace(op.path, op.oldValue!);
+				break;
+			case OpType.Move: {
+				const currentSegs = this.segmentsFrom(op.to);
+				const baseSegs    = this.segmentsFrom(op.from);
+				const doRestore = () => {
+					const value = structuredClone(this.getAt(currentSegs));
+					this.removeAt(currentSegs);
+					this.insertAt(baseSegs, value);
+				};
+				const undoRestore = () => {
+					const value = structuredClone(this.getAt(baseSegs));
+					this.removeAt(baseSegs);
+					this.insertAt(currentSegs, value);
+				};
+				doRestore();
+				this.pushOperation({ undo: undoRestore, redo: doRestore });
+				break;
+			}
+		}
+	}
+
 	// Recursively walks two JSON values in parallel, building up a flat list of
 	// DiffOps. Paths are expressed in normalized JSONPath notation (e.g. $['a'][0]).
 	//
@@ -799,42 +617,45 @@ export class Engine<T extends JsonValue = JsonValue> {
 	//     because there's no deeper structure to compare.
 	private diffArrayByKey(
 		a: JsonValue[], b: JsonValue[],
-		segs: Seg[], pattern: string, key: string, ops: DiffOp[]
+		path: string, key: string, ordered: boolean,
+		ops: DiffOp[], includeUnchanged: boolean, cascade: boolean
 	): void {
-		const aMap = this.buildIdentityMap(a, key, segs);
-		const bMap = this.buildIdentityMap(b, key, segs);
+		const aMap = new Map(a.map((item, i) => [(item as any)[key], { item, i }]));
+		const bMap = new Map(b.map((item, i) => [(item as any)[key], { item, i }]));
 
-		for (const [id, item] of aMap)
-			if (!bMap.has(id)) ops.push({ op: OpType.Remove, path: segsToPath([...segs, { key, value: id }]), value: item, identity: id });
+		for (const [id, { item, i }] of aMap)
+			if (!bMap.has(id)) ops.push({ op: OpType.Remove, path: `${path}[${i}]`, value: item, identity: id });
 
-		for (const [id, item] of bMap)
-			if (!aMap.has(id)) ops.push({ op: OpType.Add, path: segsToPath([...segs, { key, value: id }]), value: item, identity: id });
+		for (const [id, { item, i }] of bMap)
+			if (!aMap.has(id)) ops.push({ op: OpType.Add, path: `${path}[${i}]`, value: item, identity: id });
 
-		for (const [id, bItem] of bMap)
-			if (aMap.has(id)) this.diffNode(aMap.get(id)!, bItem, [...segs, { key, value: id }], patternElement(pattern), ops, id);
-	}
+		for (const [id, { item: bItem, i: bIndex }] of bMap) {
+			if (!aMap.has(id)) continue;
+			const { item: aItem, i: aIndex } = aMap.get(id)!;
+			const displacement = ordered ? bIndex - aIndex : 0;
 
-	// Builds identity → item for one side of a keyed array, enforcing the
-	// contract x-key declares: every item is an object carrying a primitive
-	// identity, and identities are unique. Violations used to collapse
-	// silently in a Map and produce quietly wrong diffs — now they throw.
-	private buildIdentityMap(arr: JsonValue[], key: string, segs: Seg[]): Map<JsonValue, JsonValue> {
-		const map = new Map<JsonValue, JsonValue>();
-		for (const item of arr) {
-			const id = identityOf(item, key);
-			if (id === undefined || (id !== null && typeof id === 'object')) {
-				throw new Error(
-					`diff: item in keyed array at ${segsToPath(segs)} has no primitive '${key}' identity`
-				);
+			const fieldOps: DiffOp[] = [];
+			this.diffNode(aItem, bItem, `${path}[${bIndex}]`, fieldOps, false, cascade, true);
+
+			const fieldsChanged = fieldOps.length > 0;
+			const displaced     = displacement !== 0;
+
+			if (fieldsChanged) {
+				ops.push({
+					op:           OpType.Replace,
+					path:         `${path}[${bIndex}]`,
+					identity:     id,
+					value:        bItem,
+					oldValue:     aItem,
+					displacement,
+					changes:      fieldOps,
+				});
+			} else if (displaced) {
+				ops.push({ op: OpType.Move, from: `${path}[${aIndex}]`, to: `${path}[${bIndex}]`, identity: id });
+			} else if (includeUnchanged) {
+				ops.push({ op: OpType.Unchanged, path: `${path}[${bIndex}]`, identity: id, value: bItem, displacement: 0 });
 			}
-			if (map.has(id)) {
-				throw new Error(
-					`diff: duplicate identity ${JSON.stringify(id)} for key '${key}' in array at ${segsToPath(segs)}`
-				);
-			}
-			map.set(id, item);
 		}
-		return map;
 	}
 
 	// $self set diff: the item itself is its identity. Reduces to symmetric set
@@ -850,61 +671,59 @@ export class Engine<T extends JsonValue = JsonValue> {
 	// is the cleaner answer when items have a natural ID. Tracked in #18.
 	private diffArrayBySelf(
 		a: JsonValue[], b: JsonValue[],
-		segs: Seg[], ops: DiffOp[]
+		path: string, ops: DiffOp[]
 	): void {
 		for (const arr of [a, b]) {
 			for (const item of arr) {
 				if (item !== null && typeof item === 'object') {
 					throw new Error(
-						`diff: x-key '$self' at ${segsToPath(segs)} requires primitive items, got ` +
+						`diff: x-key '$self' at ${path} requires primitive items, got ` +
 						`${Array.isArray(item) ? 'array' : 'object'}. ` +
 						`Use x-key: '<field>' for arrays of objects. See #18.`
 					);
 				}
 			}
 		}
-		// Sets, not maps: $self declares set semantics, so duplicates collapse
-		// by design rather than erroring like keyed arrays do.
-		const aSet = new Set(a);
-		const bSet = new Set(b);
+		const aMap = new Map<JsonValue, number>();
+		a.forEach((item, i) => aMap.set(item, i));
+		const bMap = new Map<JsonValue, number>();
+		b.forEach((item, i) => bMap.set(item, i));
 
-		for (const item of aSet)
-			if (!bSet.has(item)) ops.push({ op: OpType.Remove, path: segsToPath([...segs, { key: null, value: item }]), value: item, identity: item });
+		for (const [item, i] of aMap)
+			if (!bMap.has(item)) ops.push({ op: OpType.Remove, path: `${path}[${i}]`, value: item, identity: item });
 
-		for (const item of bSet)
-			if (!aSet.has(item)) ops.push({ op: OpType.Add, path: segsToPath([...segs, { key: null, value: item }]), value: item, identity: item });
+		for (const [item, i] of bMap)
+			if (!aMap.has(item)) ops.push({ op: OpType.Add, path: `${path}[${i}]`, value: item, identity: item });
 	}
 
-	// `segs` is the canonical address of the node pair (identity segments
-	// inside keyed arrays); `pattern` is the same location in keyMap form
-	// (every array hop is [*]) for x-key lookups.
-	private diffNode(a: JsonValue, b: JsonValue, segs: Seg[], pattern: string, ops: DiffOp[], identity?: JsonValue): void {
+	private diffNode(a: JsonValue, b: JsonValue, path: string, ops: DiffOp[], includeUnchanged: boolean, cascade: boolean, insideElement: boolean, identity?: JsonValue): void {
 		if (Array.isArray(a) && Array.isArray(b)) {
-			const key = this.keyMap.get(pattern);
-			if (key === '$self') { this.diffArrayBySelf(a, b, segs, ops); return; }
-			// diffArrayByKey stamps its own identity per item, so outer identity is not forwarded
-			if (key) { this.diffArrayByKey(a, b, segs, pattern, key, ops); return; }
+			const meta = this.keyMap.get(path) ?? this.keyMap.get(toPathPattern(path));
+			if (meta) {
+				if (insideElement && !cascade) return;
+				if (meta.key === '$self') { this.diffArrayBySelf(a, b, path, ops); return; }
+				this.diffArrayByKey(a, b, path, meta.key, meta.ordered, ops, includeUnchanged, cascade);
+				return;
+			}
 			const maxLen = Math.max(a.length, b.length);
 			for (let i = 0; i < maxLen; i++) {
-				const child = [...segs, i];
-				if (i >= a.length) ops.push({ op: OpType.Add, path: segsToPath(child), value: b[i], ...(identity !== undefined && { identity }) });
-				else if (i >= b.length) ops.push({ op: OpType.Remove, path: segsToPath(child), value: a[i], ...(identity !== undefined && { identity }) });
-				else this.diffNode(a[i], b[i], child, patternElement(pattern), ops, identity);
+				const child = `${path}[${i}]`;
+				if (i >= a.length) ops.push({ op: OpType.Add, path: child, value: b[i], ...(identity !== undefined && { identity }) });
+				else if (i >= b.length) ops.push({ op: OpType.Remove, path: child, value: a[i], ...(identity !== undefined && { identity }) });
+				else this.diffNode(a[i], b[i], child, ops, includeUnchanged, cascade, insideElement, identity);
 			}
 		} else if (isPlainObject(a) && isPlainObject(b)) {
 			const ao = a as Record<string, JsonValue>;
 			const bo = b as Record<string, JsonValue>;
 			const allKeys = new Set([...Object.keys(ao), ...Object.keys(bo)]);
 			for (const key of allKeys) {
-				const child = [...segs, key];
-				if (!(key in ao)) ops.push({ op: OpType.Add, path: segsToPath(child), value: bo[key], ...(identity !== undefined && { identity }) });
-				else if (!(key in bo)) ops.push({ op: OpType.Remove, path: segsToPath(child), value: ao[key], ...(identity !== undefined && { identity }) });
-				else this.diffNode(ao[key], bo[key], child, patternChild(pattern, key), ops, identity);
+				const child = `${path}['${key}']`;
+				if (!(key in ao)) ops.push({ op: OpType.Add, path: child, value: bo[key], ...(identity !== undefined && { identity }) });
+				else if (!(key in bo)) ops.push({ op: OpType.Remove, path: child, value: ao[key], ...(identity !== undefined && { identity }) });
+				else this.diffNode(ao[key], bo[key], child, ops, includeUnchanged, cascade, insideElement, identity);
 			}
 		} else if (a !== b) {
-			// Covers: same-type primitives with different values, and type changes
-			// (e.g. object → array). In both cases there's nothing to recurse into.
-			ops.push({ op: OpType.Replace, path: segsToPath(segs), oldValue: a, value: b, ...(identity !== undefined && { identity }) });
+			ops.push({ op: OpType.Replace, path, oldValue: a, value: b, ...(identity !== undefined && { identity }) });
 		}
 	}
 
@@ -1195,30 +1014,17 @@ export class NodeEngine<T extends JsonValue = JsonValue> {
 	// Scoped diff: ops under the prefix with paths rebased to the child's frame.
 	// Each op also carries absolutePath so callers that need the full document
 	// path don't have to re-join it themselves.
-	diff(path?: string, options?: { key?: string }): DiffOp[] {
-		// Ops carry canonical paths (identity segments inside keyed arrays), so
-		// the lens prefix must be canonicalized the same way before matching.
-		// Done per call — the identity occupying an index can change between calls.
-		const canonicalPrefix = this.parent.canonicalizePath(this.prefix, this.parent.draft);
+	diff(path?: string, options?: { key?: string; includeUnchanged?: boolean; cascade?: boolean }): DiffOp[] {
 		return this.parent.diff(
 			path ? joinPath(this.prefix, path) : undefined,
 			options,
 		)
-			.filter(op => isUnderPrefix(opPath(op), canonicalPrefix))
+			.filter(op => isUnderPrefix(opPath(op), this.prefix))
 			.map(op => {
-				const rebased = rebaseDiffOp(op, canonicalPrefix);
+				const rebased = rebaseDiffOp(op, this.prefix);
 				if ('path' in rebased) return { ...rebased, absolutePath: (op as any).path };
 				return rebased;
 			});
-	}
-
-	// Identity view — the array path joins into the parent frame, and entry
-	// paths come back rebased into the child frame so they feed straight into
-	// this lens's own ops (same canonical-prefix handling as diff()).
-	items<V extends JsonValue = JsonValue>(arrayPath: string, options?: { key?: string }): ItemEntry<V>[] {
-		const canonicalPrefix = this.parent.canonicalizePath(this.prefix, this.parent.draft);
-		return this.parent.items<V>(joinPath(this.prefix, arrayPath), options)
-			.map(entry => ({ ...entry, path: rebasePath(entry.path, canonicalPrefix) }));
 	}
 
 	// Nested children compose by joining paths and creating a fresh lens

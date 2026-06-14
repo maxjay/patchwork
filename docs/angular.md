@@ -68,27 +68,6 @@ const store = fromEngine(engine);
 | `store.getValue<U>(path)` | `Signal<U>` | draft, strict single-match |
 | `store.getValueBase<U>(path)` | `Signal<U>` | base, strict single-match |
 | `store.diff(path?, options?)` | `Signal<DiffOp[]>` | structural diff |
-| `store.items<V>(path, options?)` | `Signal<ItemEntry<V>[]>` | merged identity view of a keyed array |
-
-`items` is the read model for list UIs over keyed arrays: every entry has a stable `identity` (use it for `track`), an engine-built `path` (pass it to mutations), an op label (`add` / `remove` / `replace`, absent when unchanged), and the item `value` — base value for removed ghosts. See the README's `items()` section for the entry shape.
-
-For recursive/tree shapes, `replace` entries also carry `selfChanged` and `descendantsChanged` so a row can distinguish "this node was edited" (`[class.edited]="row.selfChanged"`) from "this node only contains edited children" (`[class.has-edits]="row.descendantsChanged"`).
-
-```ts
-@Component({
-  template: `
-    @for (row of users(); track row.identity) {
-      <user-row [user]="row.value" [class.ghost]="row.op === 'remove'" [class.added]="row.op === 'add'">
-        <button (click)="store.delete(row.path)">remove</button>
-      </user-row>
-    }
-  `,
-})
-class UserList {
-  store = inject(SettingsStore);
-  users = this.store.items<User>('$.users');
-}
-```
 
 #### Typed generics
 

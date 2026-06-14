@@ -105,7 +105,7 @@ describe('PatchworkStore reactive reads', () => {
 		const itemsDiff = store.diff('$.items', { key: 'id' });
 		store.delete('$.items[0]');
 		expect(itemsDiff()).toEqual([
-			{ op: 'remove', path: "$['items'][?@['id'] == 1]", value: { id: 1 }, identity: 1 },
+			{ op: 'remove', path: "$['items'][0]", value: { id: 1 }, identity: 1 },
 		]);
 	});
 
@@ -271,65 +271,5 @@ describe('fromEngine', () => {
 		// the cached value from the last tick. (Engine state did change, but the
 		// reactive layer doesn't know that.)
 		expect(store.draft()).toBe(draftBefore);
-	});
-});
-
-describe('PatchworkStore.items', () => {
-	it('returns a Signal that re-labels entries as draft and base change', () => {
-		const store = createPatchworkStore<any>(
-			{ users: [{ email: 'a@x.com', region: 'us' }] },
-			{
-				schema: {
-					type: 'object',
-					properties: {
-						users: { type: 'array', 'x-key': 'email', items: { type: 'object' } },
-					},
-				},
-			},
-		);
-		const items = store.items('$.users');
-		expect(items()).toEqual([
-			{ identity: 'a@x.com', path: `$['users'][?@['email'] == "a@x.com"]`, value: { email: 'a@x.com', region: 'us' } },
-		]);
-
-		store.delete('$.users[0]');
-		expect(items()[0].op).toBe('remove');
-
-		store.undo();
-		expect(items()[0].op).toBeUndefined();
-
-		store.add('$.users[-]', { email: 'b@x.com', region: 'eu' });
-		expect(items().find(x => x.identity === 'b@x.com')!.op).toBe('add');
-
-		store.accept(); // base moves — everything back to unchanged
-		expect(items().every(x => x.op === undefined)).toBe(true);
-	});
-
-	it('carries selfChanged / descendantsChanged through the signal', () => {
-		const store = createPatchworkStore<any>(
-			{ nodes: [{ id: 'p', name: 'parent', children: [{ id: 'c1', name: 'a' }] }] },
-			{
-				schema: {
-					type: 'object',
-					properties: {
-						nodes: {
-							type: 'array',
-							'x-key': 'id',
-							items: {
-								type: 'object',
-								properties: {
-									children: { type: 'array', 'x-key': 'id', items: { type: 'object' } },
-								},
-							},
-						},
-					},
-				},
-			},
-		);
-		const nodes = store.items('$.nodes');
-		store.replace("$.nodes[?@.id == 'p'].children[?@.id == 'c1'].name", 'A');
-		const p = nodes().find(r => r.identity === 'p')!;
-		expect(p.selfChanged).toBe(false);
-		expect(p.descendantsChanged).toBe(true);
 	});
 });
