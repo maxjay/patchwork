@@ -64,6 +64,14 @@ The diff / items API labels **every** element with exactly one state:
 `move` and `effect` occur **only in ordered arrays**. Unordered arrays never
 produce them.
 
+`move` is **not new**: `OpType.Move`, the `{ from, to }` DiffOp variant,
+`engine.move()`, and `importChanges` all already exist (engine.ts). A move op is
+even created today — but only inside `engine.move()`, pushed onto the undo stack
+for `exportChanges`. What's missing is `diff()` *emitting* one: the base↔draft
+walk (`diffNode`) produces only add/remove/replace and never detects a reorder.
+So the only genuinely new concept here is **`effect`**; `move` just needs the
+diff to start emitting the op the engine already has.
+
 > **One API, both views.** The API returns every element with its state —
 > including `unchanged` and `effect` — so a consumer can render the **full draft
 > list** (paint each row by its state) *or* a **changes-only summary** (filter to
@@ -162,5 +170,8 @@ displacement is an independently revertible edit.
 - In-place ordered arrays (the third kind) — concept captured here, build later.
 - **Name of the new kind**: `effect` / `consequence` / `shift` — provisional;
   pick one.
-- Whether `move` is its own kind or a flavour of `modify`, and how to represent
-  several elements crossing at once (per-element from/to vs a minimal move-set).
+- `move` already exists (`OpType.Move`, import/export). The new work is (a)
+  teaching `diff()` to detect a reorder and emit it, (b) deciding what its
+  `from`/`to` are for a *detected* reorder — the existing op is path-based, but a
+  reorder is more naturally identity/index — and (c) representing several
+  elements crossing at once (per-element vs a minimal move-set).
