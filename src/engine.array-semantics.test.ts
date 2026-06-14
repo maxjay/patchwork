@@ -79,7 +79,7 @@ describe('x-key identity matching', () => {
 		expect(ops[0]).toMatchObject({
 			op:       OpType.Replace,
 			identity: 1,
-			changes:  [{ op: OpType.Replace, path: "$['age']", oldValue: 30, value: 31 }],
+			changes:  [{ op: OpType.Replace, path: "$['items'][0]['age']", oldValue: 30, value: 31 }],
 		});
 	});
 
@@ -106,7 +106,7 @@ describe('x-key identity matching', () => {
 		expect((ops[0] as any).changes).toHaveLength(2);
 	});
 
-	it('changes paths are relative to the element root', () => {
+	it('changes paths are absolute document paths', () => {
 		const e = new Engine(
 			{ items: [{ id: 1, name: 'Alpha' }] },
 			{ schema: makeSchema('id') },
@@ -114,7 +114,7 @@ describe('x-key identity matching', () => {
 		e.replace('$.items[0].name', 'Beta');
 		const ops = e.diff();
 		const change = (ops[0] as any).changes[0];
-		expect(change.path).toBe("$['name']");
+		expect(change.path).toBe("$['items'][0]['name']");
 	});
 });
 
@@ -292,7 +292,7 @@ describe('diff — cascade option', () => {
 		const ops = e.diff(undefined, { cascade: false });
 		const replaceOp = ops.find(op => op.op === OpType.Replace && (op as any).identity === 1) as any;
 		expect(replaceOp).toBeDefined();
-		expect(replaceOp.changes.every((c: any) => c.path === "$['name']")).toBe(true);
+		expect(replaceOp.changes.every((c: any) => c.path === "$['items'][0]['name']")).toBe(true);
 	});
 });
 

@@ -12,6 +12,7 @@ export enum OpType {
 	Move = 'move',
 	Copy = 'copy',
 	Revert = 'revert',
+	Unchanged = 'unchanged',
 }
 
 // An Operation is a reversible action pushed onto the undo stack.
@@ -25,11 +26,13 @@ export interface Operation {
 // expressed as a JSONPath + the relevant values. Unlike Operation, it has no
 // knowledge of history or how to reverse anything — it's purely descriptive.
 export type DiffOp =
-	| { op: OpType.Add;     path: string; absolutePath?: string; value: JsonValue; identity?: JsonValue }
-	| { op: OpType.Replace; path: string; absolutePath?: string; oldValue?: JsonValue; value: JsonValue; identity?: JsonValue }
-	| { op: OpType.Remove;  path: string; absolutePath?: string; value?: JsonValue; identity?: JsonValue }
-	| { op: OpType.Move | OpType.Copy; from: string; to: string }
-	| { op: OpType.Revert; path: string; absolutePath?: string };
+	| { op: OpType.Add;       path: string; absolutePath?: string; value: JsonValue; identity?: JsonValue }
+	| { op: OpType.Replace;   path: string; absolutePath?: string; oldValue?: JsonValue; value: JsonValue; identity?: JsonValue; displacement?: number; changes?: DiffOp[] }
+	| { op: OpType.Remove;    path: string; absolutePath?: string; value?: JsonValue; identity?: JsonValue }
+	| { op: OpType.Move;      from: string; to: string; identity?: JsonValue }
+	| { op: OpType.Copy;      from: string; to: string }
+	| { op: OpType.Revert;    path: string; absolutePath?: string }
+	| { op: OpType.Unchanged; path: string; absolutePath?: string; value: JsonValue; identity: JsonValue; displacement: number };
 
 // Path helpers used by NodeEngine.
 //
@@ -65,6 +68,7 @@ function rebaseDiffOp(op: DiffOp, prefix: string): DiffOp {
 		case OpType.Replace:
 		case OpType.Remove:
 		case OpType.Revert:
+		case OpType.Unchanged:
 			return { ...op, path: rebasePath(op.path, prefix) };
 	}
 }
@@ -78,23 +82,24 @@ function opPath(op: DiffOp): string {
 		case OpType.Replace:
 		case OpType.Remove:
 		case OpType.Revert:
+		case OpType.Unchanged:
 			return op.path;
 	}
 }
 
-function extractKeyMap(schema: Record<string, any>, path = '$'): Map<string, string> {
-	const map = new Map<string, string>();
-	if (schema['x-key']) map.set(path, schema['x-key'] as string);
+interface ArrayMeta { key: string; ordered: boolean }
+
+function extractKeyMap(schema: Record<string, any>, path = '$'): Map<string, ArrayMeta> {
+	const map = new Map<string, ArrayMeta>();
+	if (schema['x-key']) map.set(path, { key: schema['x-key'] as string, ordered: schema['x-ordered'] === true });
 	if (schema.properties) {
-		for (const [key, sub] of Object.entries(schema.properties)) {
-			for (const [p, k] of extractKeyMap(sub as Record<string, any>, `${path}['${key}']`))
-				map.set(p, k);
-		}
+		for (const [key, sub] of Object.entries(schema.properties))
+			for (const [p, m] of extractKeyMap(sub as Record<string, any>, `${path}['${key}']`))
+				map.set(p, m);
 	}
-	if (schema.items && isPlainObject(schema.items)) {
-		for (const [p, k] of extractKeyMap(schema.items as Record<string, any>, `${path}[*]`))
-			map.set(p, k);
-	}
+	if (schema.items && isPlainObject(schema.items))
+		for (const [p, m] of extractKeyMap(schema.items as Record<string, any>, `${path}[*]`))
+			map.set(p, m);
 	return map;
 }
 
@@ -129,7 +134,7 @@ export class Engine<T extends JsonValue = JsonValue> {
 	private undoStack: Operation[] = [];
 	private redoStack: Operation[] = [];
 	private ephemeralStart = -1;
-	private keyMap: Map<string, string> = new Map();
+	private keyMap: Map<string, ArrayMeta> = new Map();
 
 	constructor(base: T, options?: { schema?: Record<string, any> }) {
 		this.base = structuredClone(base);
@@ -422,22 +427,24 @@ export class Engine<T extends JsonValue = JsonValue> {
 	//
 	// Pass options.key to enable identity-based array diffing for the matched
 	// path without needing a schema.
-	diff(path?: string, options?: { key?: string }): DiffOp[] {
+	diff(path?: string, options?: { key?: string; includeUnchanged?: boolean; cascade?: boolean }): DiffOp[] {
+		const includeUnchanged = options?.includeUnchanged ?? false;
+		const cascade          = options?.cascade ?? true;
 		if (options?.key && path) {
 			const resolved = paths(this.draft, path)[0] ?? paths(this.base, path)[0];
 			if (resolved) {
 				const saved = this.keyMap;
-				this.keyMap = new Map([...this.keyMap, [resolved, options.key]]);
-				try { return this._diff(path); }
+				this.keyMap = new Map([...this.keyMap, [resolved, { key: options.key, ordered: false }]]);
+				try { return this._diff(path, includeUnchanged, cascade); }
 				finally { this.keyMap = saved; }
 			}
 		}
-		return this._diff(path);
+		return this._diff(path, includeUnchanged, cascade);
 	}
 
-	private _diff(path?: string): DiffOp[] {
+	private _diff(path?: string, includeUnchanged = false, cascade = true): DiffOp[] {
 		const ops: DiffOp[] = [];
-		this.diffNode(this.base, this.draft, '$', ops);
+		this.diffNode(this.base, this.draft, '$', ops, includeUnchanged, cascade, false);
 		if (!path) return ops;
 		const prefixes = [...new Set([...paths(this.draft, path), ...paths(this.base, path)])];
 		return ops.filter(op => prefixes.some(p => isUnderPrefix(opPath(op), p)));
@@ -566,6 +573,37 @@ export class Engine<T extends JsonValue = JsonValue> {
 		}
 	}
 
+	restore(op: DiffOp): void {
+		switch (op.op) {
+			case OpType.Add:
+				this.delete(op.path);
+				break;
+			case OpType.Remove:
+				this.add(op.path, op.value!);
+				break;
+			case OpType.Replace:
+				this.replace(op.path, op.oldValue!);
+				break;
+			case OpType.Move: {
+				const currentSegs = this.segmentsFrom(op.to);
+				const baseSegs    = this.segmentsFrom(op.from);
+				const doRestore = () => {
+					const value = structuredClone(this.getAt(currentSegs));
+					this.removeAt(currentSegs);
+					this.insertAt(baseSegs, value);
+				};
+				const undoRestore = () => {
+					const value = structuredClone(this.getAt(baseSegs));
+					this.removeAt(baseSegs);
+					this.insertAt(currentSegs, value);
+				};
+				doRestore();
+				this.pushOperation({ undo: undoRestore, redo: doRestore });
+				break;
+			}
+		}
+	}
+
 	// Recursively walks two JSON values in parallel, building up a flat list of
 	// DiffOps. Paths are expressed in normalized JSONPath notation (e.g. $['a'][0]).
 	//
@@ -579,7 +617,8 @@ export class Engine<T extends JsonValue = JsonValue> {
 	//     because there's no deeper structure to compare.
 	private diffArrayByKey(
 		a: JsonValue[], b: JsonValue[],
-		path: string, key: string, ops: DiffOp[]
+		path: string, key: string, ordered: boolean,
+		ops: DiffOp[], includeUnchanged: boolean, cascade: boolean
 	): void {
 		const aMap = new Map(a.map((item, i) => [(item as any)[key], { item, i }]));
 		const bMap = new Map(b.map((item, i) => [(item as any)[key], { item, i }]));
@@ -590,8 +629,33 @@ export class Engine<T extends JsonValue = JsonValue> {
 		for (const [id, { item, i }] of bMap)
 			if (!aMap.has(id)) ops.push({ op: OpType.Add, path: `${path}[${i}]`, value: item, identity: id });
 
-		for (const [id, { item: bItem, i: bIndex }] of bMap)
-			if (aMap.has(id)) this.diffNode(aMap.get(id)!.item, bItem, `${path}[${bIndex}]`, ops, id);
+		for (const [id, { item: bItem, i: bIndex }] of bMap) {
+			if (!aMap.has(id)) continue;
+			const { item: aItem, i: aIndex } = aMap.get(id)!;
+			const displacement = ordered ? bIndex - aIndex : 0;
+
+			const fieldOps: DiffOp[] = [];
+			this.diffNode(aItem, bItem, `${path}[${bIndex}]`, fieldOps, false, cascade, true);
+
+			const fieldsChanged = fieldOps.length > 0;
+			const displaced     = displacement !== 0;
+
+			if (fieldsChanged) {
+				ops.push({
+					op:           OpType.Replace,
+					path:         `${path}[${bIndex}]`,
+					identity:     id,
+					value:        bItem,
+					oldValue:     aItem,
+					displacement,
+					changes:      fieldOps,
+				});
+			} else if (displaced) {
+				ops.push({ op: OpType.Move, from: `${path}[${aIndex}]`, to: `${path}[${bIndex}]`, identity: id });
+			} else if (includeUnchanged) {
+				ops.push({ op: OpType.Unchanged, path: `${path}[${bIndex}]`, identity: id, value: bItem, displacement: 0 });
+			}
+		}
 	}
 
 	// $self set diff: the item itself is its identity. Reduces to symmetric set
@@ -632,18 +696,21 @@ export class Engine<T extends JsonValue = JsonValue> {
 			if (!aMap.has(item)) ops.push({ op: OpType.Add, path: `${path}[${i}]`, value: item, identity: item });
 	}
 
-	private diffNode(a: JsonValue, b: JsonValue, path: string, ops: DiffOp[], identity?: JsonValue): void {
+	private diffNode(a: JsonValue, b: JsonValue, path: string, ops: DiffOp[], includeUnchanged: boolean, cascade: boolean, insideElement: boolean, identity?: JsonValue): void {
 		if (Array.isArray(a) && Array.isArray(b)) {
-			const key = this.keyMap.get(path) ?? this.keyMap.get(toPathPattern(path));
-			if (key === '$self') { this.diffArrayBySelf(a, b, path, ops); return; }
-			// diffArrayByKey stamps its own identity per item, so outer identity is not forwarded
-			if (key) { this.diffArrayByKey(a, b, path, key, ops); return; }
+			const meta = this.keyMap.get(path) ?? this.keyMap.get(toPathPattern(path));
+			if (meta) {
+				if (insideElement && !cascade) return;
+				if (meta.key === '$self') { this.diffArrayBySelf(a, b, path, ops); return; }
+				this.diffArrayByKey(a, b, path, meta.key, meta.ordered, ops, includeUnchanged, cascade);
+				return;
+			}
 			const maxLen = Math.max(a.length, b.length);
 			for (let i = 0; i < maxLen; i++) {
 				const child = `${path}[${i}]`;
 				if (i >= a.length) ops.push({ op: OpType.Add, path: child, value: b[i], ...(identity !== undefined && { identity }) });
 				else if (i >= b.length) ops.push({ op: OpType.Remove, path: child, value: a[i], ...(identity !== undefined && { identity }) });
-				else this.diffNode(a[i], b[i], child, ops, identity);
+				else this.diffNode(a[i], b[i], child, ops, includeUnchanged, cascade, insideElement, identity);
 			}
 		} else if (isPlainObject(a) && isPlainObject(b)) {
 			const ao = a as Record<string, JsonValue>;
@@ -653,11 +720,9 @@ export class Engine<T extends JsonValue = JsonValue> {
 				const child = `${path}['${key}']`;
 				if (!(key in ao)) ops.push({ op: OpType.Add, path: child, value: bo[key], ...(identity !== undefined && { identity }) });
 				else if (!(key in bo)) ops.push({ op: OpType.Remove, path: child, value: ao[key], ...(identity !== undefined && { identity }) });
-				else this.diffNode(ao[key], bo[key], child, ops, identity);
+				else this.diffNode(ao[key], bo[key], child, ops, includeUnchanged, cascade, insideElement, identity);
 			}
 		} else if (a !== b) {
-			// Covers: same-type primitives with different values, and type changes
-			// (e.g. object → array). In both cases there's nothing to recurse into.
 			ops.push({ op: OpType.Replace, path, oldValue: a, value: b, ...(identity !== undefined && { identity }) });
 		}
 	}
@@ -949,7 +1014,7 @@ export class NodeEngine<T extends JsonValue = JsonValue> {
 	// Scoped diff: ops under the prefix with paths rebased to the child's frame.
 	// Each op also carries absolutePath so callers that need the full document
 	// path don't have to re-join it themselves.
-	diff(path?: string, options?: { key?: string }): DiffOp[] {
+	diff(path?: string, options?: { key?: string; includeUnchanged?: boolean; cascade?: boolean }): DiffOp[] {
 		return this.parent.diff(
 			path ? joinPath(this.prefix, path) : undefined,
 			options,

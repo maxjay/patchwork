@@ -1168,11 +1168,15 @@ describe('Engine — identity-keyed array diff', () => {
 		]);
 	});
 
-	it('edit within element emits replace on the changed field only', () => {
+	it('edit within element emits replace on the element with changes', () => {
 		const e = new Engine({ items: [{ id: 1, v: 'a' }, { id: 2, v: 'b' }] }, { schema });
 		e.replace('$.items[0].v', 'z');
 		expect(e.diff()).toEqual([
-			{ op: 'replace', path: "$['items'][0]['v']", oldValue: 'a', value: 'z', identity: 1 },
+			{
+				op: 'replace', path: "$['items'][0]", identity: 1, displacement: 0,
+				value: { id: 1, v: 'z' }, oldValue: { id: 1, v: 'a' },
+				changes: [{ op: 'replace', path: "$['items'][0]['v']", oldValue: 'a', value: 'z' }],
+			},
 		]);
 	});
 
@@ -1211,7 +1215,12 @@ describe('Engine — identity-keyed array diff', () => {
 		);
 		e.delete('$.groups[0].members[0]');
 		expect(e.diff()).toEqual([
-			{ op: 'remove', path: "$['groups'][0]['members'][0]", value: { uid: 10 }, identity: 10 },
+			{
+				op: 'replace', path: "$['groups'][0]", identity: 1, displacement: 0,
+				value: { gid: 1, members: [{ uid: 20 }] },
+				oldValue: { gid: 1, members: [{ uid: 10 }, { uid: 20 }] },
+				changes: [{ op: 'remove', path: "$['groups'][0]['members'][0]", value: { uid: 10 }, identity: 10 }],
+			},
 		]);
 	});
 
@@ -1220,7 +1229,11 @@ describe('Engine — identity-keyed array diff', () => {
 		const lens = e.getNodeEngine('$.items');
 		e.replace('$.items[0].v', 'z');
 		expect(lens.diff()).toEqual([
-			{ op: 'replace', path: "$[0]['v']", absolutePath: "$['items'][0]['v']", oldValue: 'a', value: 'z', identity: 1 },
+			{
+				op: 'replace', path: "$[0]", absolutePath: "$['items'][0]", identity: 1, displacement: 0,
+				value: { id: 1, v: 'z' }, oldValue: { id: 1, v: 'a' },
+				changes: [{ op: 'replace', path: "$['items'][0]['v']", oldValue: 'a', value: 'z' }],
+			},
 		]);
 	});
 
@@ -1238,7 +1251,7 @@ describe('Engine — identity-keyed array diff', () => {
 		const removeOp = ops.find(o => o.op === 'remove');
 		const replaceOp = ops.find(o => o.op === 'replace');
 		expect(removeOp).toMatchObject({ op: 'remove', value: { id: 2, v: 'b' }, identity: 2 });
-		expect(replaceOp).toMatchObject({ op: 'replace', value: 'z', identity: 3 });
+		expect(replaceOp).toMatchObject({ op: 'replace', value: { id: 3, v: 'z' }, identity: 3 });
 	});
 
 	it('nested: deleting a child emits identity; parent path is navigable in draft', () => {
@@ -1266,8 +1279,64 @@ describe('Engine — identity-keyed array diff', () => {
 		e.delete('$.groups[0].members[0]');
 
 		expect(e.diff()).toEqual([
-			{ op: 'remove', path: "$['groups'][0]['members'][0]", value: { id: 's1', label: 'Alpha' }, identity: 's1' },
+			{
+				op: 'replace', path: "$['groups'][0]", identity: 'p1', displacement: 0,
+				value:    { id: 'p1', label: 'Group A', members: [{ id: 's2', label: 'Beta' }] },
+				oldValue: { id: 'p1', label: 'Group A', members: [{ id: 's1', label: 'Alpha' }, { id: 's2', label: 'Beta' }] },
+				changes: [{ op: 'remove', path: "$['groups'][0]['members'][0]", value: { id: 's1', label: 'Alpha' }, identity: 's1' }],
+			},
 		]);
+	});
+
+	it('cascade: false — nested member delete does not mark parent as modified', () => {
+		const nestedSchema = {
+			type: 'object',
+			properties: {
+				groups: {
+					type: 'array', 'x-key': 'gid',
+					items: {
+						type: 'object',
+						properties: {
+							members: { type: 'array', 'x-key': 'uid', items: { type: 'object' } },
+						},
+					},
+				},
+			},
+		};
+		const e = new Engine(
+			{ groups: [{ gid: 1, members: [{ uid: 10 }, { uid: 20 }] }] },
+			{ schema: nestedSchema },
+		);
+		e.delete('$.groups[0].members[0]');
+		expect(e.diff(undefined, { cascade: false })).toEqual([]);
+	});
+
+	it('cascade: false — nested member delete with parent direct change only surfaces parent change', () => {
+		const nestedSchema = {
+			type: 'object',
+			properties: {
+				groups: {
+					type: 'array', 'x-key': 'id',
+					items: {
+						type: 'object',
+						properties: {
+							members: { type: 'array', 'x-key': 'id', items: { type: 'object' } },
+						},
+					},
+				},
+			},
+		};
+		const e = new Engine<any>({
+			groups: [{ id: 'p1', label: 'Group A', members: [{ id: 's1' }] }],
+		}, { schema: nestedSchema });
+		e.replace('$.groups[0].label', 'Group A renamed');
+		e.delete('$.groups[0].members[0]');
+		const ops = e.diff(undefined, { cascade: false });
+		expect(ops).toHaveLength(1);
+		expect(ops[0]).toMatchObject({ op: 'replace', identity: 'p1' });
+		const changes = (ops[0] as any).changes;
+		expect(changes).toHaveLength(1);
+		expect(changes[0]).toMatchObject({ op: 'replace', path: "$['groups'][0]['label']" });
 	});
 });
 
