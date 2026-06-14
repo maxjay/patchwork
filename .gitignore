@@ -2,3 +2,4 @@ node_modules/
 dist/
 .future/
 .env
+site/.vitepress/cache
