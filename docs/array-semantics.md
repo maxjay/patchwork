@@ -14,7 +14,7 @@
 does *not* have, and what we are deliberately leaving behind: the filter-string
 identity paths and the `Seg` / `canonicalizeSegs` / `resolveCanonical` apparatus.
 The original index-path frame issue returns with 0.12.0; this design fixes it
-properly rather than papering it over.
+properly rather than papering over it.
 
 ## First principles
 
@@ -35,65 +35,87 @@ properly rather than papering it over.
    *declared*, never inferred. Structural / whole-value identity breaks the
    instant you edit, turning an edit into remove + add.
 
-4. **Order, when it matters, is a hidden position attribute the engine
-   reconciles.** Not stored in the data — a synthetic attribute that travels
-   with the element at diff time. Disturbing it is a real modification, exactly
-   like editing a real field. (This is the correction to "just compare the two
-   indices": position is *carried*, not merely compared.)
+4. **Order shows up in the diff two ways, and only one is revertible.**
+   - A **move** — an element changed its order *relative to the other surviving
+     elements* (you dragged C in front of B). A real, user-made change.
+     Revertible (move it back).
+   - An **effect** — an element's absolute index shifted *only* because
+     something else was added or removed near it; its order relative to the
+     survivors is unchanged. The array cares about order, so this is real and is
+     surfaced — but it is **not revertible on its own**. It carries a *reason*
+     pointing at the entries that caused the shift; you revert the cause.
+
+   Position is therefore never a free-standing "modification". It splits into
+   `move` (revertible) and `effect` (consequence, not revertible).
+
+## Entry kinds
+
+The diff / items API labels **every** element with exactly one state:
+
+| kind | typical colour | meaning | revertible? | extra |
+|---|---|---|---|---|
+| `unchanged` | — | identical, and didn't cross any survivor | n/a | |
+| `add` | green | in draft, not base | yes — remove it | |
+| `remove` | red | in base, not draft | yes — restore it | |
+| `modify` | yellow | same element, fields differ | yes — restore fields | field-level changes |
+| `move` | (own colour) | crossed another surviving element | yes — move back | from/to order |
+| `effect` | muted | index shifted as a consequence of a nearby add/remove | **no** | `reason` → causing entries |
+
+`move` and `effect` occur **only in ordered arrays**. Unordered arrays never
+produce them.
+
+> **One API, both views.** The API returns every element with its state —
+> including `unchanged` and `effect` — so a consumer can render the **full draft
+> list** (paint each row by its state) *or* a **changes-only summary** (filter to
+> entries that represent a change) from the same dataset. The redesign's job is to
+> define this data precisely; the UI decides what to show.
 
 ## The three kinds
 
 ### 1. Unordered array — a bag
-Position is noise; order means nothing.
+Position is noise.
 
-- **Diff = membership only.**
-  - in `base`, not `draft` → `remove` (one op, identified by key)
-  - in `draft`, not `base` → `add`
-  - in both, fields differ → `modify` (on the element)
-  - reorder → invisible
-  - Removing **B** does **not** touch **C**. C's index shifts physically, but
-    nothing *about* C changed — same identity, same fields, and there is no
-    position attribute to disturb.
-- **Revert = restore membership.** Position is irrelevant; re-insert anywhere
-  (append). Nothing to compute, nothing to guess. (This is what killed the
-  "ghost position" heuristic — it only existed because order mattered somewhere
-  with no model for it.)
+- **Diff**: `add` / `remove` / `modify` only — no `move`, no `effect`. Reorders
+  and index shifts are invisible; removing B does not touch C in anything the
+  diff records.
+- **Revert**: restore membership; re-insert anywhere (append). Position is a
+  non-question.
 - Typical: tags, permissions, a collection of config objects keyed by id.
 
 ### 2. Ordered array — a sequence
-Position is data. Each element carries a hidden position attribute.
+Order is meaningful, so the diff records both *who moved* and *who was displaced*.
 
-- **Diff = membership + position.**
-  - `add` / `remove` / `modify` as above, **plus**
-  - removing **B** shifts everyone after it → their position attribute changed →
-    real position `modify` ops. The cascade is *correct* here: their positions
-    genuinely changed.
-  - a pure reorder (same members, new order) → a set of position-attribute
-    changes.
-- **Revert = restore membership + position.** Because position is a carried
-  attribute, revert restores it exactly — re-insert B at its recorded position,
-  the rest fall back. No neighbour-guessing.
-- Identity note: an ordered sequence of *unique* values may use `$self`; a
-  sequence that may *repeat* values cannot (the value collides) and needs a real
-  or synthetic per-element id.
+- **Diff**: `add` / `remove` / `modify`, **plus**
+  - `move` — an element crossed another *surviving* element. Revertible.
+  - `effect` — an element's index shifted because of an add/remove near it, its
+    order relative to the survivors unchanged. Surfaced, but **not revertible**;
+    its `reason` points at the causing add/remove entries.
+- **Worked example** (the case that pinned this down): base `[A, B, C]`; remove
+  B, add D where B was, restore B → `[A, B, D, C]`. Net vs base: **D added**
+  (revertible); **C effected** — index 2→3, `reason` = the add of D, *not*
+  revertible; A and B unchanged. C *has* changed (order matters), but you cannot
+  revert C on its own — reverting D's add puts everything back.
+- **Identity note**: an ordered sequence of *unique* values may use `$self`; one
+  that may *repeat* values cannot (the value collides) and needs a real or
+  synthetic per-element id.
 
 ### 3. In-place ordered array — fixed slots
 Ordered, but removal **keeps the slot** instead of closing the gap.
 
-- **Diff = membership + position, slots fixed.** Removing **B** vacates B's slot
-  but does **not** shift C, D… — their positions are unchanged. So a removal is
-  isolated in position terms (no cascade), unlike the gap-closing ordered case.
-- **Revert = restore B into its (still-reserved) slot.** Exact, no cascade.
+- **Diff**: removing B vacates B's slot but does **not** shift C, D… so removal
+  produces **no `effect` entries** — positions are fixed. (This is the key
+  difference from §2: gap-closing produces effects; slot-keeping doesn't.)
+- **Revert**: restore B into its still-reserved slot. Exact, no ripple.
 - Open (deferred): what occupies a vacated slot (hole / null / tombstone),
-  whether array length is preserved, how "add into a hole" differs from "add new".
+  whether length is preserved, how "add into a hole" differs from "add new".
 
 ## Summary
 
-| kind | remove B affects others? | reorder visible? | revert position |
+| array kind | others' index shifts on add/remove | recorded as | genuine reorder |
 |---|---|---|---|
-| unordered | no | no | irrelevant (append) |
-| ordered (gap-closing) | yes — they shift | yes | restored exactly |
-| ordered in-place | no — slot stays empty | n/a (fixed slots) | restored to its slot |
+| unordered | invisible | nothing | invisible |
+| ordered (gap-closing) | real | `effect` (not revertible, has `reason`) | `move` (revertible) |
+| ordered in-place | none (slot stays) | nothing | `move` (revertible) |
 
 ## Declaration (how the engine knows which)
 
@@ -107,24 +129,38 @@ Ordered, but removal **keeps the slot** instead of closing the gap.
   (`prefixItems` is the one positional case JSON Schema does express, for tuples.)
 - **In-place**: a second boolean on an ordered array. Deferred.
 
+## Prior art (why `effect`/`move` over an index cascade)
+
+No RFC defines array *diff* semantics. **RFC 6902 (JSON Patch)** addresses array
+elements by index and supplies the `move`/`copy` *vocabulary*, but it is a patch
+format, not a diff — and many 6902 diff libraries emit only add/remove/replace.
+The question "what is a change in a sequence" is owned by **Myers/LCS** (powers
+`git diff` — LCS members are unchanged, the diff is insert/delete) and by
+**sequence CRDTs** (Yjs, Automerge, RGA — each element has stable identity and a
+position defined by between-ness of its neighbours; inserting near an element
+does not modify it). Both treat "D inserted before C" as an insertion, not a
+change to C. Our `effect` kind is the bridge: it lets an order-significant UI
+*surface* that C was displaced (which pure LCS would hide) without pretending the
+displacement is an independently revertible edit.
+
 ## Implementation stance (direction, not detailed design)
 
-- **Drop the filter-string identity paths and the segment canonicalize/resolve
-  round-trip.** Identity stays a declared concept; the `identity` field carries
-  it in output. We do not serialize identity into path strings.
-- **Express revert with the same functional machinery as undo/redo.** Every
-  operation already captures `{ undo, redo }` closures over concrete state;
-  revert should do the same — capture *what to restore* (the element, and its
-  position when ordered) as a closure — rather than re-deriving locations from
-  path strings at apply time.
-- **Position (ordered) is a synthetic attribute reconciled at diff time**,
-  compared like a field; never stored in the user's data.
+- **Drop the filter-string identity paths and the segment round-trip.** Identity
+  stays a declared concept; the `identity` field carries it in output.
+- **Express revert through the same functional `{ undo, redo }` closures** as the
+  op stack — capture *what to restore* as a closure, don't re-derive locations
+  from path strings. `effect` entries have **no revert closure by
+  construction** — they cannot be reverted; the `reason` redirects to the cause.
+- **Ordered diff** is computed two ways from the same pairing: *relative order of
+  common identities* (LCS-flavoured) yields `move`; *absolute index delta* yields
+  `effect`. Both are cheap; neither stores position in the user's data.
 
 ## Deferred / open
 
 - Composite and nested-path identity (declared, mechanical).
 - Repeatable ordered sequences → synthetic per-element ids.
 - In-place ordered arrays (the third kind) — concept captured here, build later.
-- Diff representation of ordered position changes: per-element position deltas
-  (the cascade) vs a minimal move-set. The cascade is acceptable; move-
-  minimisation is a possible later refinement.
+- **Name of the new kind**: `effect` / `consequence` / `shift` — provisional;
+  pick one.
+- Whether `move` is its own kind or a flavour of `modify`, and how to represent
+  several elements crossing at once (per-element from/to vs a minimal move-set).
