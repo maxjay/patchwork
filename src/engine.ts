@@ -951,6 +951,19 @@ export class NodeEngine<T extends JsonValue = JsonValue> {
 		this.parent.revert(joinPath(this.prefix, jsonPath));
 	}
 
+	restore(op: DiffOp): void {
+		switch (op.op) {
+			case OpType.Add:
+			case OpType.Remove:
+			case OpType.Replace:
+				this.parent.restore({ ...op, path: joinPath(this.prefix, op.path) });
+				break;
+			case OpType.Move:
+				this.parent.restore({ ...op, from: joinPath(this.prefix, op.from), to: joinPath(this.prefix, op.to) });
+				break;
+		}
+	}
+
 	move(from: string, to: string): void {
 		this.parent.move(joinPath(this.prefix, from), joinPath(this.prefix, to));
 	}
