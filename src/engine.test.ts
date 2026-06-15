@@ -1410,4 +1410,20 @@ describe('Engine — $self set diff', () => {
 		e.replace('$.tags[0]', ['c']);
 		expect(() => e.diff()).toThrow(/\$self.*requires primitive items/);
 	});
+
+	it('includeUnchanged emits unchanged ops for items present in both sets', () => {
+		const e = new Engine<any>({ tags: ['urgent', 'review', 'blocked'] }, { schema });
+		e.delete('$.tags[0]');
+		const ops = e.diff('$.tags', { includeUnchanged: true });
+		expect(ops.some(o => o.op === 'remove'    && (o as any).identity === 'urgent')).toBe(true);
+		expect(ops.some(o => o.op === 'unchanged' && (o as any).identity === 'review')).toBe(true);
+		expect(ops.some(o => o.op === 'unchanged' && (o as any).identity === 'blocked')).toBe(true);
+	});
+
+	it('includeUnchanged with no changes emits all items as unchanged', () => {
+		const e = new Engine<any>({ tags: ['a', 'b', 'c'] }, { schema });
+		const ops = e.diff('$.tags', { includeUnchanged: true });
+		expect(ops).toHaveLength(3);
+		expect(ops.every(o => o.op === 'unchanged')).toBe(true);
+	});
 });
