@@ -447,19 +447,24 @@ export class Engine<T extends JsonValue = JsonValue> {
 		this.diffNode(this.base, this.draft, '$', ops, includeUnchanged, cascade, false);
 		if (!path) return ops;
 		const prefixes = [...new Set([...paths(this.draft, path), ...paths(this.base, path)])];
-		// Flatten Replace.changes recursively so path filters can reach ops nested inside
-		// changed parent elements (e.g. querying a child keyed array when its parent changed).
-		return this.flattenOpsForFilter(ops).filter(op => prefixes.some(p => isUnderPrefix(opPath(op), p)));
+		return this.filterOpsForPrefixes(ops, prefixes);
 	}
 
-	private flattenOpsForFilter(ops: DiffOp[]): DiffOp[] {
-		const flat: DiffOp[] = [];
+	// Filters ops to those at-or-under any prefix. When a Replace op itself does NOT
+	// match but its changes might (e.g. querying a child keyed array inside a changed
+	// parent element), recurse into Replace.changes rather than skipping the whole subtree.
+	// When a Replace op DOES match, include it without recursing — its .changes are
+	// already attached and recursing would duplicate the field-level ops in the result.
+	private filterOpsForPrefixes(ops: DiffOp[], prefixes: string[]): DiffOp[] {
+		const result: DiffOp[] = [];
 		for (const op of ops) {
-			flat.push(op);
-			if (op.op === OpType.Replace && op.changes?.length)
-				flat.push(...this.flattenOpsForFilter(op.changes));
+			if (prefixes.some(p => isUnderPrefix(opPath(op), p))) {
+				result.push(op);
+			} else if (op.op === OpType.Replace && op.changes?.length) {
+				result.push(...this.filterOpsForPrefixes(op.changes, prefixes));
+			}
 		}
-		return flat;
+		return result;
 	}
 
 	private moveOrCopy(from: string, to: string, isMove: boolean): void {

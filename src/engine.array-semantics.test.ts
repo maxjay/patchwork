@@ -573,4 +573,17 @@ describe('diff — includeUnchanged propagation into nested keyed arrays', () =>
 		expect(ops).toHaveLength(1);
 		expect(ops[0]).toMatchObject({ op: OpType.Unchanged, identity: 'DELTA' });
 	});
+
+	it('field change on one child: returns one Replace op for that child — not a duplicate field-level op', () => {
+		const e = makeOrdersEngine();
+		e.replace('$.items[0].children[1].qty', 99); // change BETA's qty
+		const ops = e.diff("$.items[0].children", { includeUnchanged: true });
+		// Expect exactly one op per child — no field-level replace leaking out alongside the element Replace
+		expect(ops).toHaveLength(3);
+		const betaOp = ops.find((o: any) => o.identity === 'BETA');
+		expect(betaOp).toBeDefined();
+		expect(betaOp!.op).toBe(OpType.Replace);
+		expect((betaOp as any).changes).toHaveLength(1); // field-level replace lives inside .changes
+		expect(ops.filter(o => o.op === OpType.Replace)).toHaveLength(1); // not duplicated at top level
+	});
 });
