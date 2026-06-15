@@ -489,3 +489,88 @@ describe('edge cases', () => {
 		expect(ops.some(op => op.op === OpType.Remove  && (op as any).identity === 'us')).toBe(true);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// diff — includeUnchanged propagation into nested keyed arrays
+//
+// Schema anatomy: orders (keyed by ref) → each order has lineItems (keyed by sku).
+// When diff() is called with includeUnchanged: true for a specific lineItems path,
+// it should return Unchanged ops for every unmodified line item.
+// Bug: diffArrayByKey hard-coded includeUnchanged: false when recursing into
+// matched element pairs, so nested Unchanged ops were never emitted.
+// ---------------------------------------------------------------------------
+
+const ordersSchema = makeNestedSchema('ref', 'sku');
+
+// Convenience: build an engine with one order that has three line items.
+function makeOrdersEngine() {
+	return new Engine<any>(
+		{
+			items: [
+				{
+					ref: 'ORD-1',
+					label: 'First order',
+					children: [
+						{ sku: 'ALPHA', qty: 1 },
+						{ sku: 'BETA',  qty: 2 },
+						{ sku: 'GAMMA', qty: 5 },
+					],
+				},
+				{
+					ref: 'ORD-2',
+					label: 'Second order',
+					children: [
+						{ sku: 'DELTA', qty: 3 },
+					],
+				},
+			],
+		},
+		{ schema: ordersSchema },
+	);
+}
+
+describe('diff — includeUnchanged propagation into nested keyed arrays', () => {
+	it('no changes: diff on child path with includeUnchanged returns Unchanged for every child', () => {
+		const e = makeOrdersEngine();
+		const ops = e.diff("$.items[0].children", { includeUnchanged: true });
+		expect(ops).toHaveLength(3);
+		expect(ops.every(o => o.op === OpType.Unchanged)).toBe(true);
+		expect(ops.map((o: any) => o.identity).sort()).toEqual(['ALPHA', 'BETA', 'GAMMA']);
+	});
+
+	it('one child removed: diff returns Remove + Unchanged for remaining children', () => {
+		const e = makeOrdersEngine();
+		e.delete('$.items[0].children[0]'); // remove ALPHA
+		const ops = e.diff("$.items[0].children", { includeUnchanged: true });
+		expect(ops.some(o => o.op === OpType.Remove    && (o as any).identity === 'ALPHA')).toBe(true);
+		expect(ops.some(o => o.op === OpType.Unchanged && (o as any).identity === 'BETA')).toBe(true);
+		expect(ops.some(o => o.op === OpType.Unchanged && (o as any).identity === 'GAMMA')).toBe(true);
+		expect(ops).toHaveLength(3);
+	});
+
+	it('one child added: diff returns Add + Unchanged for existing children', () => {
+		const e = makeOrdersEngine();
+		e.add('$.items[0].children[3]', { sku: 'DELTA-NEW', qty: 9 });
+		const ops = e.diff("$.items[0].children", { includeUnchanged: true });
+		expect(ops.some(o => o.op === OpType.Add       && (o as any).identity === 'DELTA-NEW')).toBe(true);
+		expect(ops.some(o => o.op === OpType.Unchanged && (o as any).identity === 'ALPHA')).toBe(true);
+		expect(ops.some(o => o.op === OpType.Unchanged && (o as any).identity === 'BETA')).toBe(true);
+		expect(ops.some(o => o.op === OpType.Unchanged && (o as any).identity === 'GAMMA')).toBe(true);
+	});
+
+	it('parent field changed (not the child array): child diff still returns Unchanged for children', () => {
+		const e = makeOrdersEngine();
+		e.replace('$.items[0].label', 'Updated label'); // change parent, not children
+		const ops = e.diff("$.items[0].children", { includeUnchanged: true });
+		expect(ops).toHaveLength(3);
+		expect(ops.every(o => o.op === OpType.Unchanged)).toBe(true);
+	});
+
+	it('second order children are unaffected when only first order changes', () => {
+		const e = makeOrdersEngine();
+		e.delete('$.items[0].children[0]'); // mutate ORD-1 only
+		const ops = e.diff("$.items[1].children", { includeUnchanged: true });
+		expect(ops).toHaveLength(1);
+		expect(ops[0]).toMatchObject({ op: OpType.Unchanged, identity: 'DELTA' });
+	});
+});
