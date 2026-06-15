@@ -671,7 +671,7 @@ export class Engine<T extends JsonValue = JsonValue> {
 	// is the cleaner answer when items have a natural ID. Tracked in #18.
 	private diffArrayBySelf(
 		a: JsonValue[], b: JsonValue[],
-		path: string, ops: DiffOp[]
+		path: string, ops: DiffOp[], includeUnchanged: boolean
 	): void {
 		for (const arr of [a, b]) {
 			for (const item of arr) {
@@ -692,8 +692,10 @@ export class Engine<T extends JsonValue = JsonValue> {
 		for (const [item, i] of aMap)
 			if (!bMap.has(item)) ops.push({ op: OpType.Remove, path: `${path}[${i}]`, value: item, identity: item });
 
-		for (const [item, i] of bMap)
+		for (const [item, i] of bMap) {
 			if (!aMap.has(item)) ops.push({ op: OpType.Add, path: `${path}[${i}]`, value: item, identity: item });
+			else if (includeUnchanged) ops.push({ op: OpType.Unchanged, path: `${path}[${i}]`, value: item, identity: item, displacement: 0 });
+		}
 	}
 
 	private diffNode(a: JsonValue, b: JsonValue, path: string, ops: DiffOp[], includeUnchanged: boolean, cascade: boolean, insideElement: boolean, identity?: JsonValue): void {
@@ -701,7 +703,7 @@ export class Engine<T extends JsonValue = JsonValue> {
 			const meta = this.keyMap.get(path) ?? this.keyMap.get(toPathPattern(path));
 			if (meta) {
 				if (insideElement && !cascade) return;
-				if (meta.key === '$self') { this.diffArrayBySelf(a, b, path, ops); return; }
+				if (meta.key === '$self') { this.diffArrayBySelf(a, b, path, ops, includeUnchanged); return; }
 				this.diffArrayByKey(a, b, path, meta.key, meta.ordered, ops, includeUnchanged, cascade);
 				return;
 			}
