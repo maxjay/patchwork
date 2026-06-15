@@ -447,7 +447,19 @@ export class Engine<T extends JsonValue = JsonValue> {
 		this.diffNode(this.base, this.draft, '$', ops, includeUnchanged, cascade, false);
 		if (!path) return ops;
 		const prefixes = [...new Set([...paths(this.draft, path), ...paths(this.base, path)])];
-		return ops.filter(op => prefixes.some(p => isUnderPrefix(opPath(op), p)));
+		// Flatten Replace.changes recursively so path filters can reach ops nested inside
+		// changed parent elements (e.g. querying a child keyed array when its parent changed).
+		return this.flattenOpsForFilter(ops).filter(op => prefixes.some(p => isUnderPrefix(opPath(op), p)));
+	}
+
+	private flattenOpsForFilter(ops: DiffOp[]): DiffOp[] {
+		const flat: DiffOp[] = [];
+		for (const op of ops) {
+			flat.push(op);
+			if (op.op === OpType.Replace && op.changes?.length)
+				flat.push(...this.flattenOpsForFilter(op.changes));
+		}
+		return flat;
 	}
 
 	private moveOrCopy(from: string, to: string, isMove: boolean): void {
@@ -635,9 +647,9 @@ export class Engine<T extends JsonValue = JsonValue> {
 			const displacement = ordered ? bIndex - aIndex : 0;
 
 			const fieldOps: DiffOp[] = [];
-			this.diffNode(aItem, bItem, `${path}[${bIndex}]`, fieldOps, false, cascade, true);
+			this.diffNode(aItem, bItem, `${path}[${bIndex}]`, fieldOps, includeUnchanged, cascade, true);
 
-			const fieldsChanged = fieldOps.length > 0;
+			const fieldsChanged = fieldOps.some(op => op.op !== OpType.Unchanged);
 			const displaced     = displacement !== 0;
 
 			if (fieldsChanged) {
@@ -654,6 +666,9 @@ export class Engine<T extends JsonValue = JsonValue> {
 				ops.push({ op: OpType.Move, from: `${path}[${aIndex}]`, to: `${path}[${bIndex}]`, identity: id });
 			} else if (includeUnchanged) {
 				ops.push({ op: OpType.Unchanged, path: `${path}[${bIndex}]`, identity: id, value: bItem, displacement: 0 });
+				// Push nested ops directly so path-filtered queries can reach children
+				// (e.g. diff('$.orders[0].lineItems', {includeUnchanged:true}) when the order itself is unchanged)
+				if (fieldOps.length > 0) ops.push(...fieldOps);
 			}
 		}
 	}
