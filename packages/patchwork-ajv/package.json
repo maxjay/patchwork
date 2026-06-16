@@ -1,6 +1,6 @@
 {
   "name": "@maxjay/patchwork-ajv",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Ajv JSON Schema validation add-on for @maxjay/patchwork",
   "type": "module",
   "main": "dist/index.js",

@@ -35,6 +35,8 @@ Addressing uses [JSONPath (RFC 9535)](https://datatracker.ietf.org/doc/html/rfc9
 npm install @maxjay/patchwork
 ```
 
+For JSON Schema validation, see the [`@maxjay/patchwork-ajv`](packages/patchwork-ajv) add-on.
+
 ## How it works
 
 ### 1. Wrap any JSON document
