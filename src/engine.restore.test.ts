@@ -2,17 +2,16 @@ import { describe, it, expect } from 'vitest';
 import { Engine, OpType } from './engine';
 
 const INITIAL = {
-  primaryTaskTypes: [
+  regions: [
     {
-      taskMnemonic: 'DEV',
-      description: 'Development Task',
-      action: 'develop',
-      secondaryTaskTypes: [
-        { description: 'Frontend Work',      taskMnemonic: 'DEV-FE',  pttTaskMnemonic: 'DEV', action: 'build-ui' },
-        { description: 'Backend Work',       taskMnemonic: 'DEV-BE',  pttTaskMnemonic: 'DEV', action: 'build-api' },
-        { description: 'Database Migration', taskMnemonic: 'DEV-DB',  pttTaskMnemonic: 'DEV', action: 'migrate' },
-        { description: 'Code Review',        taskMnemonic: 'DEV-CR',  pttTaskMnemonic: 'DEV', action: 'review' },
-        { description: 'Testing',            taskMnemonic: 'DEV-TST', pttTaskMnemonic: 'DEV', action: 'test' },
+      code: 'EU',
+      name: 'Europe',
+      districts: [
+        { id: 'eu-north', label: 'Northern Europe',  population: 105 },
+        { id: 'eu-west',  label: 'Western Europe',   population: 198 },
+        { id: 'eu-east',  label: 'Eastern Europe',   population: 292 },
+        { id: 'eu-south', label: 'Southern Europe',  population: 151 },
+        { id: 'eu-cent',  label: 'Central Europe',   population: 134 },
       ],
     },
   ],
@@ -20,12 +19,12 @@ const INITIAL = {
 
 const SCHEMA = {
   properties: {
-    primaryTaskTypes: {
-      'x-key': 'taskMnemonic',
+    regions: {
+      'x-key': 'code',
       items: {
         properties: {
-          secondaryTaskTypes: {
-            'x-key': 'description',
+          districts: {
+            'x-key': 'id',
             items: { properties: {} },
           },
         },
@@ -35,33 +34,33 @@ const SCHEMA = {
 };
 
 describe('restore removed item in keyed array after multiple deletes', () => {
-  it('restores Code Review after Backend, Database, Code Review, Testing all deleted', () => {
+  it('restores Southern Europe after Western, Eastern, Southern, Central all deleted', () => {
     const e = new Engine(INITIAL, { schema: SCHEMA });
 
-    // delete Backend Work, Database Migration, Code Review, Testing (always delete index 1 as they shift down)
-    e.delete("$['primaryTaskTypes'][0]['secondaryTaskTypes'][1]");
-    e.delete("$['primaryTaskTypes'][0]['secondaryTaskTypes'][1]");
-    e.delete("$['primaryTaskTypes'][0]['secondaryTaskTypes'][1]");
-    e.delete("$['primaryTaskTypes'][0]['secondaryTaskTypes'][1]");
+    // delete Western, Eastern, Southern, Central (always delete index 1 as items shift down)
+    e.delete("$['regions'][0]['districts'][1]");
+    e.delete("$['regions'][0]['districts'][1]");
+    e.delete("$['regions'][0]['districts'][1]");
+    e.delete("$['regions'][0]['districts'][1]");
 
-    // draft is now [Frontend Work] only
-    expect((e.draft as any).primaryTaskTypes[0].secondaryTaskTypes).toHaveLength(1);
+    // draft is now [Northern Europe] only
+    expect((e.draft as any).regions[0].districts).toHaveLength(1);
 
-    // find the Remove op for Code Review — it's nested in the Replace op's changes for DEV
+    // find the Remove op for Southern Europe — nested in the Replace op's changes for EU
     const ops = e.diff();
-    const devOp = ops.find(op => op.op === OpType.Replace && (op as any).identity === 'DEV');
-    const reviewOp = (devOp as any)?.changes?.find((op: any) => op.op === OpType.Remove && op.identity === 'Code Review');
-    expect(reviewOp).toBeDefined();
+    const euOp = ops.find(op => op.op === OpType.Replace && (op as any).identity === 'EU');
+    const southernOp = (euOp as any)?.changes?.find((op: any) => op.op === OpType.Remove && op.identity === 'eu-south');
+    expect(southernOp).toBeDefined();
 
     // restore it — should splice in, not setAt index 3 on a 1-item array
-    e.restore(reviewOp!);
+    e.restore(southernOp!);
 
-    const stts = (e.draft as any).primaryTaskTypes[0].secondaryTaskTypes;
+    const districts = (e.draft as any).regions[0].districts;
 
-    // no sparse holes — Code Review appended after Frontend Work
-    expect(stts).toHaveLength(2);
-    expect(stts[0].description).toBe('Frontend Work');
-    expect(stts[1].description).toBe('Code Review');
+    // no sparse holes — Southern Europe appended after Northern Europe
+    expect(districts).toHaveLength(2);
+    expect(districts[0].id).toBe('eu-north');
+    expect(districts[1].id).toBe('eu-south');
 
     // diff must not throw
     expect(() => e.diff()).not.toThrow();
