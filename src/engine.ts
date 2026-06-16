@@ -595,9 +595,14 @@ export class Engine<T extends JsonValue = JsonValue> {
 			case OpType.Add:
 				this.delete(op.path);
 				break;
-			case OpType.Remove:
-				this.add(op.path, op.value!);
+			case OpType.Remove: {
+				const segments    = this.segmentsFrom(op.path);
+				const doRestore   = () => this.insertAt(segments, structuredClone(op.value!));
+				const undoRestore = () => this.removeAt(segments);
+				doRestore();
+				this.pushOperation({ undo: undoRestore, redo: doRestore });
 				break;
+			}
 			case OpType.Replace:
 				this.replace(op.path, op.oldValue!);
 				break;
