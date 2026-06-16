@@ -1,0 +1,45 @@
+{
+  "name": "@maxjay/patchwork-ajv",
+  "version": "0.1.0",
+  "description": "Ajv JSON Schema validation add-on for @maxjay/patchwork",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "npm run clean && tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm test && npm run build"
+  },
+  "peerDependencies": {
+    "@maxjay/patchwork": ">=0.18.0"
+  },
+  "dependencies": {
+    "ajv": "^8.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.5"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/maxjay/patchwork.git",
+    "directory": "packages/patchwork-ajv"
+  },
+  "keywords": ["json", "schema", "validation", "ajv", "patchwork"],
+  "author": "Max <maxjay2000@gmail.com>",
+  "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public"
+  }
+}
