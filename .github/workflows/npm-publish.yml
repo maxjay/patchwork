@@ -33,3 +33,15 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm publish
+
+  publish-ajv:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - run: cd packages/patchwork-ajv && npm ci && npm run build && npm publish
