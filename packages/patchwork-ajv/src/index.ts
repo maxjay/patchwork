@@ -1,4 +1,5 @@
-import Ajv, { type ErrorObject } from 'ajv';
+import type Ajv from 'ajv';
+import type { ErrorObject } from 'ajv';
 
 // Ajv's ErrorObject extended with a JSONPath-format path field.
 // All original Ajv fields are preserved; `path` is added alongside
@@ -16,14 +17,11 @@ function toJsonPath(instancePath: string): string {
 		.join('');
 }
 
-// Validates engine.draft against a JSON Schema and returns all violations.
-// Pass the Engine instance directly; the schema is the same one you passed
-// to the Engine constructor.
-//
-// x-key and x-ordered vendor extensions are ignored by Ajv (strict: false).
-// $ref and $defs are resolved automatically.
-export function validate(engine: { draft: unknown }, schema: object): ValidationError[] {
-	const ajv = new Ajv({ strict: false, allErrors: true });
+// Validates engine.draft against the given schema using your Ajv instance.
+// Configure Ajv however you need ($data, ajv-formats, custom keywords, etc.)
+// before passing it in — this function just runs the validation and maps
+// error paths to patchwork's JSONPath format.
+export function validate(engine: { draft: unknown }, ajv: Ajv, schema: object): ValidationError[] {
 	const fn = ajv.compile(schema);
 	fn(engine.draft);
 	return (fn.errors ?? []).map(err => ({ ...err, path: toJsonPath(err.instancePath) }));
