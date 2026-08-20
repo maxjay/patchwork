@@ -87,6 +87,35 @@ function opPath(op: DiffOp): string {
 	}
 }
 
+// diff()'s output order follows the source objects' own key-insertion order
+// (diffNode unions keys via `new Set([...Object.keys(a), ...Object.keys(b)])`).
+// That's fine for consuming the ops programmatically, but it means two
+// otherwise-equivalent fixtures built in a different order can produce the
+// same DiffOps in a different array order — which turns snapshot tests
+// (toMatchSnapshot() on diff() output) flaky for reasons unrelated to any
+// real change. Sort before snapshotting to get a stable, deterministic order.
+const OP_SORT_PRIORITY: Record<OpType, number> = {
+	[OpType.Remove]:    0,
+	[OpType.Add]:       1,
+	[OpType.Replace]:   2,
+	[OpType.Move]:      3,
+	[OpType.Copy]:      4,
+	[OpType.Revert]:    5,
+	[OpType.Unchanged]: 6,
+};
+
+// Returns a new array with the same DiffOps sorted deterministically by path
+// (op type as a tiebreaker when paths collide, e.g. a 'remove' and a nested
+// 'replace' that land at the same index — see docs/engine.md's "identity
+// field and path ambiguity" section). Does not mutate the input.
+export function sortDiff(ops: DiffOp[]): DiffOp[] {
+	return [...ops].sort((a, b) => {
+		const pathCompare = opPath(a).localeCompare(opPath(b));
+		if (pathCompare !== 0) return pathCompare;
+		return OP_SORT_PRIORITY[a.op] - OP_SORT_PRIORITY[b.op];
+	});
+}
+
 interface ArrayMeta { key: string; ordered: boolean }
 
 function extractKeyMap(schema: Record<string, any>, path = '$'): Map<string, ArrayMeta> {

@@ -445,7 +445,7 @@ type DiffOp =
 ### Entrypoints
 
 ```
-@maxjay/patchwork          Engine, NodeEngine, DiffOp, OpType
+@maxjay/patchwork          Engine, NodeEngine, DiffOp, OpType, sortDiff
 @maxjay/patchwork/tools    createEngineTools, Tool, EngineLike
 @maxjay/patchwork/chat     runAgentLoop, AgentMessage, ModelAdapter, NativeAdapter, PromptAdapter, toAgentTools
 @maxjay/patchwork/mcp      toMcpTools, handleMcpCall
@@ -457,6 +457,7 @@ type DiffOp =
 For deeper coverage of the engine internals, see [docs/engine.md](docs/engine.md).
 For LLM integration, adapters, and MCP, see [docs/llms.md](docs/llms.md).
 For the Angular Signals adapter, see [docs/angular.md](docs/angular.md).
+For testing an app built on patchwork, see [docs/testing.md](docs/testing.md).
 
 ## Contributors
 

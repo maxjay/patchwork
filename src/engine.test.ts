@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { DiffOp, Engine } from './engine';
+import { DiffOp, Engine, sortDiff } from './engine';
 
 describe('Engine.replace', () => {
 	it('replaces a value in an object', () => {
@@ -1425,5 +1425,48 @@ describe('Engine — $self set diff', () => {
 		const ops = e.diff('$.tags', { includeUnchanged: true });
 		expect(ops).toHaveLength(3);
 		expect(ops.every(o => o.op === 'unchanged')).toBe(true);
+	});
+});
+
+describe('sortDiff', () => {
+	it('orders ops by path regardless of input order', () => {
+		const e = new Engine<any>({ b: 1, a: 1, c: 1 });
+		e.replace('$.b', 2);
+		e.replace('$.a', 2);
+		e.replace('$.c', 2);
+		const sorted = sortDiff(e.diff());
+		expect(sorted.map(o => (o as any).path)).toEqual(["$['a']", "$['b']", "$['c']"]);
+	});
+
+	it('does not mutate the input array', () => {
+		const e = new Engine<any>({ b: 1, a: 1 });
+		e.replace('$.b', 2);
+		e.replace('$.a', 2);
+		const original = e.diff();
+		const originalOrder = original.map(o => (o as any).path);
+		sortDiff(original);
+		expect(original.map(o => (o as any).path)).toEqual(originalOrder);
+	});
+
+	it('is stable for two otherwise-equivalent diffs built from differently-ordered fixtures', () => {
+		const e1 = new Engine<any>({ x: 1, y: 1 });
+		e1.replace('$.x', 9);
+		e1.replace('$.y', 9);
+
+		const e2 = new Engine<any>({ y: 1, x: 1 }); // same data, different key order
+		e2.replace('$.x', 9);
+		e2.replace('$.y', 9);
+
+		expect(sortDiff(e1.diff())).toEqual(sortDiff(e2.diff()));
+	});
+
+	it('breaks path ties by a fixed op-type priority (remove before a same-index add)', () => {
+		const schema = { type: 'object', properties: { items: { type: 'array', 'x-key': 'id', items: { type: 'object' } } } };
+		const e = new Engine<any>({ items: [{ id: 1 }, { id: 2 }] }, { schema });
+		e.delete('$.items[0]');
+		e.add('$.items[0]', { id: 3 });
+		const sorted = sortDiff(e.diff('$.items'));
+		// both land at index 0 after the delete+add; remove sorts before add
+		expect(sorted.map(o => o.op)).toEqual(['remove', 'add']);
 	});
 });
