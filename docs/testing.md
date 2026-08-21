@@ -73,11 +73,48 @@ expect(doubled()).toBe(886); // synchronous, no TestBed needed
 
 ---
 
-## Snapshot-testing `diff()` output
+## Asserting on `diff()` output
 
-`diff()`'s output order follows the *source objects'* own key-insertion order (it unions keys via `Object.keys`). Two fixtures with the same data but different key order can legitimately produce the same `DiffOp`s in a different array order — which shows up as a spurious `toMatchSnapshot()` diff that has nothing to do with a real behavior change.
+`diff()`'s output order follows the *source objects'* own key-insertion order (it unions keys via `Object.keys`). Two fixtures with the same data but different key order can legitimately produce the same `DiffOp`s in a different array order — which shows up as a spurious test failure that has nothing to do with a real behavior change, whether that's `toMatchSnapshot()` or a plain `toEqual()` against a hand-written expected list.
 
-`sortDiff()` (exported from `@maxjay/patchwork`) gives you a deterministic order — by path, then by a fixed op-type priority as a tiebreaker for same-path collisions (e.g. a `remove` and a same-index `replace` from a surviving identity-keyed element):
+### `expect(...).toEqualDiff(...)`
+
+`@maxjay/patchwork/testing` ships a custom matcher that compares two `DiffOp[]` order-independently, so there's nothing to remember to sort on either side:
+
+```ts
+import { patchworkMatchers } from '@maxjay/patchwork/testing';
+
+expect.extend(patchworkMatchers); // once, in a setup file
+
+it('renames the field', () => {
+  const engine = new Engine({ a: 1, b: 1 });
+  engine.replace('$.a', 2);
+  engine.replace('$.b', 2);
+
+  expect(engine.diff()).toEqualDiff([
+    { op: 'replace', path: "$['b']", oldValue: 1, value: 2 }, // order doesn't matter
+    { op: 'replace', path: "$['a']", oldValue: 1, value: 2 },
+  ]);
+});
+```
+
+Works with both vitest and Jest — both implement the same `{ pass, message }` custom-matcher contract, and `patchworkMatchers` is written against that shared shape, not either library's types. On failure, the message prints both sides pre-sorted, so you see the actual structural difference instead of a reordered-array diff that obscures it.
+
+To get it typed on `expect(...)`, add the standard `expect.extend` type-augmentation pattern to a `.d.ts` in your project (this mirrors what most custom-matcher packages ask for — patchwork doesn't ship this automatically so it doesn't assume which of vitest/Jest's `Assertion` interfaces you're augmenting):
+
+```ts
+// vitest:
+import type { DiffOp } from '@maxjay/patchwork';
+declare module 'vitest' {
+  interface Assertion<T = any> {
+    toEqualDiff(expected: DiffOp[]): T;
+  }
+}
+```
+
+### `sortDiff()` for snapshots
+
+`toEqualDiff` covers equality against a literal expected list. For `toMatchSnapshot()`, where there's no "expected" list to normalize against, sort the actual value before snapshotting instead — `sortDiff()` uses the same path-then-op-type ordering as the matcher internally:
 
 ```ts
 import { sortDiff } from '@maxjay/patchwork';
@@ -85,7 +122,15 @@ import { sortDiff } from '@maxjay/patchwork';
 expect(sortDiff(engine.diff())).toMatchSnapshot();
 ```
 
-Prefer this over asserting on raw `diff()` array order in any test — including non-snapshot `toEqual` assertions on multi-op diffs, for the same reason.
+### `diffsEqual(a, b)`
+
+The boolean check both of the above are built on, if you want it directly (e.g. inside a custom assertion of your own):
+
+```ts
+import { diffsEqual } from '@maxjay/patchwork/testing';
+
+if (!diffsEqual(engine.diff(), expectedOps)) { /* ... */ }
+```
 
 ---
 

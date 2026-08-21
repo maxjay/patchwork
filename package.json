@@ -25,6 +25,10 @@
       "import": "./dist/mcp.js",
       "types": "./dist/mcp.d.ts"
     },
+    "./testing": {
+      "import": "./dist/testing.js",
+      "types": "./dist/testing.d.ts"
+    },
     "./angular": {
       "import": "./dist/angular.js",
       "types": "./dist/angular.d.ts"

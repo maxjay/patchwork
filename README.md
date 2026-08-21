@@ -449,6 +449,7 @@ type DiffOp =
 @maxjay/patchwork/tools    createEngineTools, Tool, EngineLike
 @maxjay/patchwork/chat     runAgentLoop, AgentMessage, ModelAdapter, NativeAdapter, PromptAdapter, toAgentTools
 @maxjay/patchwork/mcp      toMcpTools, handleMcpCall
+@maxjay/patchwork/testing  patchworkMatchers, diffsEqual
 @maxjay/patchwork/angular  createPatchworkStore, fromEngine, PatchworkStore
 ```
 
