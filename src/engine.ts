@@ -57,6 +57,29 @@ function isUnderPrefix(fullPath: string, prefix: string): boolean {
 	return fullPath === prefix || fullPath.startsWith(prefix + '[');
 }
 
+// Uses the library parser to extract (string | number) segments from a JSONPath.
+// Works on both normalized paths (output of paths()) and simple literal paths.
+// Exported so other modules (e.g. jsonpatch.ts, converting to/from JSON Pointer)
+// can reuse the same parsing instead of re-implementing it against the raw string.
+export function jsonPathToSegments(jsonPath: string): (string | number)[] {
+	const ast = parse(jsonPath);
+	const segments: (string | number)[] = [];
+	for (const segment of ast.segments) {
+		const node = segment.node;
+		if (node.type === 'MemberNameShorthand') {
+			segments.push(node.value);
+		} else if (node.type === 'BracketedSelection') {
+			const selector = node.selectors[0];
+			if (selector.type === 'NameSelector') {
+				segments.push(selector.value);
+			} else if (selector.type === 'IndexSelector') {
+				segments.push(selector.value);
+			}
+		}
+	}
+	return segments;
+}
+
 function rebaseDiffOp(op: DiffOp, prefix: string): DiffOp {
 	// Switch (rather than if/else with spread) so TypeScript narrows the union
 	// cleanly through each branch — spreading `op` doesn't preserve narrowing.
@@ -778,22 +801,7 @@ export class Engine<T extends JsonValue = JsonValue> {
 	// Works on both normalized paths (output of paths()) and simple literal paths.
 	/** @internal */
 	segmentsFrom(jsonPath: string): (string | number)[] {
-		const ast = parse(jsonPath);
-		const segments: (string | number)[] = [];
-		for (const segment of ast.segments) {
-			const node = segment.node;
-			if (node.type === 'MemberNameShorthand') {
-				segments.push(node.value);
-			} else if (node.type === 'BracketedSelection') {
-				const selector = node.selectors[0];
-				if (selector.type === 'NameSelector') {
-					segments.push(selector.value);
-				} else if (selector.type === 'IndexSelector') {
-					segments.push(selector.value);
-				}
-			}
-		}
-		return segments;
+		return jsonPathToSegments(jsonPath);
 	}
 
 	/** @internal */

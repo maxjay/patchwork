@@ -12,6 +12,7 @@
   <a href="#scoped-lenses">Scoped lenses</a> &middot;
   <a href="#llm-integration">LLM integration</a> &middot;
   <a href="#angular-integration">Angular</a> &middot;
+  <a href="#json-patch-rfc-6902">JSON Patch</a> &middot;
   <a href="#api">API</a>
 </p>
 
@@ -376,6 +377,37 @@ class ServerSettings {
 
 See **[docs/angular.md](docs/angular.md)** for the full API, typed generics, change-highlighting UI, ephemeral form binding, scoped sub-stores, and service patterns.
 
+## JSON Patch (RFC 6902)
+
+`diff()` output is patchwork's own JSONPath-addressed `DiffOp` format — richer than the spec (it carries `identity`, `displacement`, nested `changes`, etc.) but not a JSON Patch document. `diffPatch()` and `applyJsonPatch()` bridge to and from the standard:
+
+```ts
+import { diffPatch, applyJsonPatch } from '@maxjay/patchwork';
+
+const engine = new Engine({ server: { host: 'localhost', port: 8080 } });
+engine.replace('$.server.port', 443);
+
+const patch = diffPatch(engine);
+// [ { op: 'replace', path: '/server/port', value: 443 } ]  — RFC 6902, JSON Pointer addressed
+
+applyJsonPatch(engine.base, patch);
+// { server: { host: 'localhost', port: 443 } } — equals engine.draft
+```
+
+`diffPatch(engine, path?, options?)` diffs and converts in one call — shorthand for `toJsonPatch(engine.diff(path, options))`. Use `toJsonPatch()` directly when you already have `DiffOp[]` (from `.diff()` or `.exportChanges()`).
+
+`applyJsonPatch(document, patch)` implements the full RFC 6902 operation set (`add`, `remove`, `replace`, `move`, `copy`, `test`) against **any** JSON document, not only ones produced by this engine — it's a standalone, spec-compliant apply that works with patches from other RFC 6902 tooling too. It's pure (never mutates `document`) and atomic (any failing operation — a bad pointer, a missing member, an out-of-bounds index, a failed `test` — throws a `JsonPatchError` and leaves the input untouched).
+
+```ts
+import { applyJsonPatch, JsonPatchError } from '@maxjay/patchwork';
+
+try {
+  applyJsonPatch(doc, patch);
+} catch (e) {
+  if (e instanceof JsonPatchError) console.error(e.index, e.operation, e.message);
+}
+```
+
 ## API
 
 ### `Engine<T>`
@@ -442,10 +474,29 @@ type DiffOp =
 - `changes` — on element-level `replace` ops. Flat list of field-level `DiffOp`s describing what changed inside the element. Paths are absolute document paths.
 - `unchanged` op — only emitted when `diff()` is called with `includeUnchanged: true`.
 
+### JSON Patch
+
+| Member | Description |
+|---|---|
+| `diffPatch(engine, path?, options?)` | Diff an `Engine`/`NodeEngine` straight to an RFC 6902 patch document. |
+| `toJsonPatch(ops)` | Convert `DiffOp[]` to RFC 6902 `JsonPatchOperation[]`. |
+| `applyJsonPatch(document, patch)` | Apply an RFC 6902 patch document to any JSON value. Pure, atomic. Throws `JsonPatchError` on failure. |
+| `jsonPathToPointer(path)` | Normalized JSONPath (`$['a'][0]`) → JSON Pointer (`/a/0`). |
+
+```ts
+type JsonPatchOperation =
+  | { op: 'add';     path: string; value: JsonValue }
+  | { op: 'remove';  path: string }
+  | { op: 'replace'; path: string; value: JsonValue }
+  | { op: 'move';    path: string; from: string }
+  | { op: 'copy';    path: string; from: string }
+  | { op: 'test';    path: string; value: JsonValue };
+```
+
 ### Entrypoints
 
 ```
-@maxjay/patchwork          Engine, NodeEngine, DiffOp, OpType
+@maxjay/patchwork          Engine, NodeEngine, DiffOp, OpType, diffPatch, toJsonPatch, applyJsonPatch, JsonPatchOperation, JsonPatchError
 @maxjay/patchwork/tools    createEngineTools, Tool, EngineLike
 @maxjay/patchwork/chat     runAgentLoop, AgentMessage, ModelAdapter, NativeAdapter, PromptAdapter, toAgentTools
 @maxjay/patchwork/mcp      toMcpTools, handleMcpCall

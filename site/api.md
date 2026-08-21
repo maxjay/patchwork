@@ -111,10 +111,53 @@ patchwork extends JSON Schema with two keywords on array nodes:
 
 ---
 
+## JSON Patch (RFC 6902)
+
+```ts
+import { diffPatch, toJsonPatch, applyJsonPatch, jsonPathToPointer } from '@maxjay/patchwork'
+```
+
+| Member | Description |
+|---|---|
+| `diffPatch(engine, path?, options?)` | Diff an `Engine`/`NodeEngine` and convert the result straight to an RFC 6902 patch document. Shorthand for `toJsonPatch(engine.diff(path, options))`. |
+| `toJsonPatch(ops)` | Convert `DiffOp[]` (from `.diff()`) into RFC 6902 `JsonPatchOperation[]` — JSON Pointer (RFC 6901) addressed, standard op vocabulary only. Element-level `replace` ops with `changes` are flattened into field-level ops for a minimal patch. `unchanged` ops are dropped; `revert` ops throw (no RFC 6902 equivalent). |
+| `applyJsonPatch(document, patch)` | Apply an RFC 6902 patch document to any JSON value. Pure — `document` is never mutated — and atomic: if any operation fails, a `JsonPatchError` is thrown and nothing is applied. |
+| `jsonPathToPointer(path)` | Convert a normalized JSONPath (`$['a'][0]`) to a JSON Pointer (`/a/0`). |
+
+```ts
+const engine = new Engine({ server: { port: 8080 } });
+engine.replace('$.server.port', 443);
+
+const patch = diffPatch(engine);
+// [ { op: 'replace', path: '/server/port', value: 443 } ]
+
+applyJsonPatch(engine.base, patch); // { server: { port: 443 } } — equals engine.draft
+```
+
+`applyJsonPatch` implements the full RFC 6902 operation set (`add`, `remove`, `replace`, `move`, `copy`, `test`) against any JSON document — not just ones produced by this engine — so it also accepts patches from other RFC 6902 tooling.
+
+### `JsonPatchOperation`
+
+```ts
+type JsonPatchOperation =
+  | { op: 'add';     path: string; value: JsonValue }
+  | { op: 'remove';  path: string }
+  | { op: 'replace'; path: string; value: JsonValue }
+  | { op: 'move';    path: string; from: string }
+  | { op: 'copy';    path: string; from: string }
+  | { op: 'test';    path: string; value: JsonValue };
+```
+
+### `JsonPatchError`
+
+Thrown by `applyJsonPatch` when an operation fails (bad pointer, missing member, out-of-bounds array index, failed `test`). Carries `index` (the failing operation's position in the patch) and `operation` (the operation itself).
+
+---
+
 ## Entrypoints
 
 ```
-@maxjay/patchwork          Engine, NodeEngine, DiffOp, OpType
+@maxjay/patchwork          Engine, NodeEngine, DiffOp, OpType, diffPatch, toJsonPatch, applyJsonPatch, JsonPatchOperation, JsonPatchError
 @maxjay/patchwork/tools    createEngineTools, Tool, EngineLike
 @maxjay/patchwork/chat     runAgentLoop, AgentMessage, ModelAdapter, NativeAdapter, PromptAdapter, toAgentTools
 @maxjay/patchwork/mcp      toMcpTools, handleMcpCall
