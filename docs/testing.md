@@ -108,6 +108,7 @@ import type { DiffOp } from '@maxjay/patchwork';
 declare module 'vitest' {
   interface Assertion<T = any> {
     toEqualDiff(expected: DiffOp[]): T;
+    toContainDiffOp(pattern: Partial<DiffOp>): T;
   }
 }
 ```
@@ -122,14 +123,33 @@ import { sortDiff } from '@maxjay/patchwork';
 expect(sortDiff(engine.diff())).toMatchSnapshot();
 ```
 
-### `diffsEqual(a, b)`
+### `expect(...).toContainDiffOp(...)`
 
-The boolean check both of the above are built on, if you want it directly (e.g. inside a custom assertion of your own):
+`toEqualDiff` needs the *whole* diff enumerated, which is often more than a test actually cares about — most of the time you want to assert that one specific thing happened, not pin down everything else that changed alongside it. `toContainDiffOp` matches on a **subset** of an op's fields, so `{ op: 'remove', identity: 5 }` matches regardless of what `path`/`value` happen to be:
 
 ```ts
-import { diffsEqual } from '@maxjay/patchwork/testing';
+import { patchworkMatchers } from '@maxjay/patchwork/testing';
+expect.extend(patchworkMatchers);
+
+it('removes the archived item', () => {
+  engine.delete('$.items[?@.archived]');
+
+  expect(engine.diff()).toContainDiffOp({ op: 'remove', identity: 5 });
+  // don't care what else is in the diff — just that this happened
+});
+```
+
+Without it, the usual workaround is `ops.some(op => op.op === 'remove' && op.identity === 5)` fed into `toBe(true)` — which is exactly what this repo's own test suite did before switching some of it over (see `engine.array-semantics.test.ts`). It works, but a failure just says "expected false to be true," with no indication of what the diff actually contained. `toContainDiffOp` fails with the pattern you were looking for *and* a full listing of what was actually there.
+
+### `diffsEqual(a, b)` / `diffContainsOp(ops, pattern)`
+
+The boolean checks the two matchers above are built on, if you want them directly — e.g. inside a custom assertion of your own, or a plain `if` in test setup:
+
+```ts
+import { diffsEqual, diffContainsOp } from '@maxjay/patchwork/testing';
 
 if (!diffsEqual(engine.diff(), expectedOps)) { /* ... */ }
+if (!diffContainsOp(engine.diff(), { op: 'add', identity: 5 })) { /* ... */ }
 ```
 
 ---

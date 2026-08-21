@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { Engine } from './engine';
-import { diffsEqual, patchworkMatchers } from './testing';
+import { diffContainsOp, diffsEqual, patchworkMatchers } from './testing';
 
 declare module 'vitest' {
 	interface Assertion<T = any> {
 		toEqualDiff(expected: unknown): T;
+		toContainDiffOp(pattern: unknown): T;
 	}
 }
 
@@ -72,5 +73,53 @@ describe('toEqualDiff matcher', () => {
 		const e = new Engine<any>({ x: 1 });
 		e.replace('$.x', 2);
 		expect(e.diff()).not.toEqualDiff([]);
+	});
+});
+
+describe('diffContainsOp', () => {
+	const schema = { type: 'object', properties: { tags: { type: 'array', 'x-key': 'id', items: { type: 'object' } } } };
+
+	it('matches on a subset of fields, ignoring the rest', () => {
+		const e = new Engine<any>({ tags: [{ id: 1, label: 'a' }, { id: 2, label: 'b' }] }, { schema });
+		e.delete('$.tags[0]');
+		const ops = e.diff('$.tags');
+
+		expect(diffContainsOp(ops, { op: 'remove', identity: 1 })).toBe(true);
+		// path/value weren't specified in the pattern — irrelevant to the match
+		expect(diffContainsOp(ops, { op: 'remove' })).toBe(true);
+	});
+
+	it('is false when nothing matches', () => {
+		const e = new Engine<any>({ tags: [{ id: 1, label: 'a' }] }, { schema });
+		e.delete('$.tags[0]');
+		const ops = e.diff('$.tags');
+		expect(diffContainsOp(ops, { op: 'add' })).toBe(false);
+		expect(diffContainsOp(ops, { op: 'remove', identity: 999 })).toBe(false);
+	});
+});
+
+describe('toContainDiffOp matcher', () => {
+	const schema = { type: 'object', properties: { tags: { type: 'array', 'x-key': 'id', items: { type: 'object' } } } };
+
+	it('passes when a matching op is present among others', () => {
+		const e = new Engine<any>({ tags: [{ id: 1 }, { id: 2 }, { id: 3 }] }, { schema });
+		e.delete('$.tags[0]');
+		e.add('$.tags[-]', { id: 4 });
+		e.replace('$.tags[0].id', 2); // no-op-ish churn, just more ops in the diff
+
+		// asserts one specific change happened without enumerating the
+		// whole diff — this is exactly what the repo's own
+		// engine.array-semantics.test.ts used ops.some(...) + toBe(true) for
+		expect(e.diff('$.tags')).toContainDiffOp({ op: 'remove', identity: 1 });
+		expect(e.diff('$.tags')).toContainDiffOp({ op: 'add', identity: 4 });
+	});
+
+	it('fails with a readable message listing the received ops', () => {
+		const e = new Engine<any>({ tags: [{ id: 1 }] }, { schema });
+		e.add('$.tags[-]', { id: 2 });
+
+		expect(() => {
+			expect(e.diff('$.tags')).toContainDiffOp({ op: 'remove' });
+		}).toThrowError(/expected diff to contain an op matching/);
 	});
 });

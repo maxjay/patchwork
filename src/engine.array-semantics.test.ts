@@ -1,5 +1,16 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { Engine, OpType } from './engine';
+import { patchworkMatchers } from './testing';
+
+declare module 'vitest' {
+	interface Assertion<T = any> {
+		toContainDiffOp(pattern: unknown): T;
+	}
+}
+
+beforeAll(() => {
+	expect.extend(patchworkMatchers);
+});
 
 // ---------------------------------------------------------------------------
 // Schema helpers
@@ -157,9 +168,9 @@ describe('ordered arrays — displacement', () => {
 		);
 		e.add('$.items[0]', { id: 'X' });
 		const ops = e.diff();
-		expect(ops.some(op => op.op === OpType.Add && (op as any).identity === 'X')).toBe(true);
-		expect(ops.some(op => op.op === OpType.Move && (op as any).identity === 'A')).toBe(true);
-		expect(ops.some(op => op.op === OpType.Move && (op as any).identity === 'B')).toBe(true);
+		expect(ops).toContainDiffOp({ op: OpType.Add, identity: 'X' });
+		expect(ops).toContainDiffOp({ op: OpType.Move, identity: 'A' });
+		expect(ops).toContainDiffOp({ op: OpType.Move, identity: 'B' });
 	});
 
 	it('remove + add at same position produces zero net displacement', () => {
@@ -170,9 +181,9 @@ describe('ordered arrays — displacement', () => {
 		e.delete('$.items[1]');
 		e.add('$.items[1]', { id: 'X' });
 		const ops = e.diff();
-		expect(ops.some(op => op.op === OpType.Remove && (op as any).identity === 'B')).toBe(true);
-		expect(ops.some(op => op.op === OpType.Add    && (op as any).identity === 'X')).toBe(true);
-		expect(ops.some(op => op.op === OpType.Move   && (op as any).identity === 'C')).toBe(false);
+		expect(ops).toContainDiffOp({ op: OpType.Remove, identity: 'B' });
+		expect(ops).toContainDiffOp({ op: OpType.Add, identity: 'X' });
+		expect(ops).not.toContainDiffOp({ op: OpType.Move, identity: 'C' });
 	});
 
 	it('two adds before an element produce displacement move for that element', () => {
